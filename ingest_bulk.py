@@ -1,20 +1,27 @@
+# Standard libraries
+import ctypes
 from difflib import SequenceMatcher
 import logging
 import os
 import re
 import sys
+import tempfile
+import time
 
+# Third-party libraries
 import sgtk
 
+# Intra-studio libraries
 # from utils.sg_create_entities import create_asset
 from utils.sg_create_entities import create_deliverable
 
-from MaxPlus import (Core, FileManager, Matrix3, PathManager, Point3,
-                     SelectionManager, SuperClassIds, ViewportManager)
+# App-specific libraries
+from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3,
+                     Point3, SelectionManager, SuperClassIds, ViewportManager)
 from pymxs import runtime as mxs
 
-# get the script folder from shotgun
-script_folder = mxs.execute('''
+# Get the script folder from shotgun
+mxs_command = '''
 (
     local resultPath = undefined
     global DreamView_Scripts_ScriptsPath
@@ -23,24 +30,31 @@ script_folder = mxs.execute('''
         local toolsDir = getFilenamePath DreamView_Scripts_ScriptsPath
         if doesFileExist toolsDir then
         (
-            local checkDirs = getDirectories (toolsDir + "Check-*")
+            local checkDirs = getDirectories (toolsDir + "{}")
             if checkDirs.count > 0 then resultPath = checkDirs[1]
         )
     )
     resultPath
 )
-''')
+'''
 
-# import check_out and check_in
+# Import Check-in module
+script_folder = mxs.execute(mxs_command.format('Check-In*'))
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
-
 from check_in_out import check_in
 
+# Import QC Batch Tool module
+script_folder = mxs.execute(mxs_command.format('QC_Batch_Tool'))
+if script_folder not in sys.path:
+    sys.path.insert(0, script_folder)
+from qc_batch_tool import process_files
 
-DEBUG_EXPORT_COUNT = 5
+
+DEBUG_EXPORT_COUNT = 0
+DEBUG_SKIP_CHECKIN = False
 DEBUG_SKIP_EXPORT_MAX = False
-DEBUG_SKIP_CHECKIN = True
+DEBUG_SKIP_QC = False
 DEFAULT_PERSP_VIEW_MATRIX = Matrix3(
     Point3(0.707107, 0.353553, -0.612372),
     Point3(-0.707107, 0.353553, -0.612372),
@@ -50,7 +64,6 @@ EXCLUDE_SUPERCLASS_IDS = [SuperClassIds.Light, SuperClassIds.Camera]
 INTERSECTION_DIST = 250.0
 logging.basicConfig()
 LOGGER = logging.getLogger()
-NODES_HIDE_STATE = {}
 ORIGIN_POSITION = Point3(0, 0, 0)
 ORIGIN_TRANSFORM_MATRIX = Matrix3(
     Point3(1, 0, 0),
@@ -109,6 +122,24 @@ def alphanum_key(string, case_sensitive=False):
             for chunk in re.split('([0-9]+)', string)]
 
 
+def check_file_io_gamma():
+    """Checks and updates scene's gamma settings.
+
+    Returns:
+        bool: Did the Gamma settings have to be updated?
+    """
+    result = True
+    if mxs.fileInGamma != mxs.displayGamma:
+        mxs.fileInGamma = mxs.displayGamma
+        result = False
+        print('Updating file in gamma to match display gamma!')
+    if mxs.fileOutGamma != mxs.displayGamma:
+        mxs.fileOutGamma = mxs.displayGamma
+        result = False
+        print('Updating file out gamma to match display gamma!')
+    return result
+
+
 def check_geo(node1, node2):
     """Checks to see if 2 given nodes have the same geometry and material.
 
@@ -145,6 +176,56 @@ def check_geo(node1, node2):
                 node1.GetMaterial().GetName() == node2.GetMaterial().GetName():
             return True
     return False
+
+
+def check_in_asset(asset_file_path, wrk_order, asset_name, description):
+    """Checks-in supplied MAX file as an asset.
+
+    Args:
+        asset_file_path (str): MAX to check-in.
+        wrk_order (dict): Work order Shotgun dictionary.
+        asset_name (str): Name of asset to check-in.
+        description (str): Description of asset for check-in.
+    """
+    # Open file
+    print("\tOpening {}".format(asset_file_path))
+    FileManager.Open(asset_file_path, True)
+
+    qc_renders = None
+    if not DEBUG_SKIP_QC:
+        qc_renders_file_path = \
+            asset_file_path.replace('.max', '_QC_Tool')
+        qc_renders = [os.path.join(qc_renders_file_path, f)
+                      for f in os.listdir(qc_renders_file_path)
+                      if f.lower().endswith('.png')]
+
+    # Has the asset been ingested before?  If so, find the previous deliverable.
+    deliverable = SG.find_one(
+        "CustomEntity24",
+        [['code', 'contains', '{}_Hi Ingest Bulk'.format(asset_name)]])
+
+    # Create Asset
+    asset = create_asset(
+        SG, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name,
+        deliverable_type='Asset Ingest Bulk', deliverable=deliverable)
+
+    # Get Task from newly created Asset.
+    task = SG.find_one(
+        "Task",
+        [
+            [
+                'entity.CustomEntity25.sg_deliverable.CustomEntity24.sg_link.Asset.id',
+                'is',
+                asset['id']
+            ]
+        ]
+    )
+
+    # Check in MAX file.
+    result = check_in(
+        task['id'], rendered=qc_renders, description=description)
+
+    print(result)
 
 
 def compare_node_names(node1, node2):
@@ -198,7 +279,7 @@ def create_asset(sg, logger, project, wrk_ordr, name, deliverable_type=None,
     Args:
         sg (tank.authentication.shotgun_wrapper.ShotgunWrapper): Shotgun
             API instance.
-        logger (logging.Logger): Pythong logger.
+        logger (logging.Logger): Python logger.
         project (dict): Shotgun project.
         wrk_ordr (dict): Shotgun entity work order.
         name (str): Asset name.
@@ -228,7 +309,7 @@ def create_asset(sg, logger, project, wrk_ordr, name, deliverable_type=None,
     return new_asset
 
 
-def export_node(node, name):
+def export_node(node, name, nodes_hide_state):
     """Save node to another max file.
     Get one node, move it to the origin, move the viewport to see it,
     save to another max file, move the node back to its previous position.
@@ -236,17 +317,20 @@ def export_node(node, name):
     Args:
         node (MaxPlus.INode): Node to save into new file.
         name (str): Name of the max file to which the node is going.
+        nodes_hide_state (dict[str, bool]): Dictionary of hide states for
+            all nodes.
 
     Returns:
-        dict[str, str]:
+        dict[str, str]: Dictionary of node stats.
+            (i.e. 'max': file_path, 'original_node': node name)
     """
     node_export_data = {
         'max': '',
-        'original_node': ''
+        'original_node': node.Name
     }
 
     for n in get_all_nodes([node]):
-        n.Hide = NODES_HIDE_STATE[n.Name]
+        n.Hide = nodes_hide_state[n.Name]
 
     node_pos = node.Position
     node.Position = ORIGIN_POSITION
@@ -256,22 +340,30 @@ def export_node(node, name):
     SelectionManager.ClearNodeSelection(True)
     ViewportManager.RedrawViewportsNow(Core.GetCurrentTime())
 
-    save_dir = os.path.join(PathManager.GetSceneDir(), "Export",
-                            FileManager.GetFileName().rsplit(".", 1)[0])
-    # Make the export directory if it doesn't exist.
-    if not os.path.isdir(save_dir):
-        os.makedirs(save_dir)
-    save_path = os.path.join(save_dir, "{}.max".format(name))
     print('{}:'.format(name))
 
-    if not DEBUG_SKIP_EXPORT_MAX:
+    if DEBUG_SKIP_EXPORT_MAX:
+        print("\tSkipping exporting MAX file for {}".format(name))
+    else:
+        save_dir = os.path.join(
+            tempfile.gettempdir(),
+            "ingest_bulk",
+            FileManager.GetFileName().rsplit(".", 1)[0])
+
+        # Make the export directory if it doesn't exist.
+        if not os.path.isdir(save_dir):
+            os.makedirs(save_dir)
+        # Python Temp
+        save_dir = get_full_path(save_dir).replace("c:", "C:")
+        save_path = os.path.join(
+            save_dir, "{}_{}.max".format(name, int(time.time() * 100)))
+
         node.Select()
         FileManager.SaveNodes(
             SelectionManager.GetNodes(),
             save_path)
         print('\tExporting MAX file: {}'.format(save_path))
         node_export_data['max'] = save_path
-        node_export_data['original_node'] = node.Name
         SelectionManager.ClearNodeSelection(True)
 
     # Reset position
@@ -294,7 +386,8 @@ def export_nodes(groups_to_export):
             exported files.
             Ex. asset_name: {'max': max_file_path, 'original node': node_name}
     """
-    node_data_dict = {}
+    nodes_data_dict = {}
+    nodes_hide_state = {}
 
     # Save viewport settings
     av = ViewportManager.GetActiveViewport()
@@ -331,7 +424,7 @@ def export_nodes(groups_to_export):
     # Remember all nodes hide state, then hide all nodes to make
     # thumbnail clean.
     for node in get_all_nodes():
-        NODES_HIDE_STATE[node.Name] = node.Hide
+        nodes_hide_state[node.Name] = node.Hide
         node.Hide = True
 
     # Make a list of (node, name) tuples.
@@ -345,18 +438,25 @@ def export_nodes(groups_to_export):
     # sort by node name
     nodes.sort(key=lambda x: alphanum_key(x[1]))
 
-    print("Exporting {} nodes...".format(len(nodes)))
-
     # Export
 
     # Debug count
     total = DEBUG_EXPORT_COUNT
     count = 0
+    num_nodes = len(nodes)
+
+    export_msg = "Exporting {} nodes..."
+    if DEBUG_EXPORT_COUNT:
+        export_msg.replace("...", " (Debug)...")
+        num_nodes = total
+
+    print(export_msg.format(num_nodes))
 
     for node, name in nodes:
-        node_data_dict[name] = export_node(node, name)
+        nodes_data_dict[name] = export_node(node, name, nodes_hide_state)
 
-        # debug count
+        # If Debug count is > 0, it will limit the number of nodes
+        # being exported.
         if DEBUG_EXPORT_COUNT:
             count += 1
             if count == total:
@@ -365,7 +465,7 @@ def export_nodes(groups_to_export):
     SelectionManager.ClearNodeSelection(True)
     # Set all nodes previous visible state.
     for node in get_all_nodes():
-        node.Hide = NODES_HIDE_STATE[node.Name]
+        node.Hide = nodes_hide_state[node.Name]
 
     # Reset viewport to original position.
     if avef:
@@ -380,9 +480,9 @@ def export_nodes(groups_to_export):
     if not maxed:
         ViewportManager.SetViewportLayout(layout)
 
-    print("\n{} nodes exported.".format(len(nodes)))
+    print("\n{} nodes exported.".format(num_nodes))
 
-    return node_data_dict
+    return nodes_data_dict
 
 
 def get_all_nodes(nodes=None):
@@ -466,6 +566,31 @@ def get_asset_nodes():
     # print("==========\n")
 
     return matched_nodes
+
+
+def get_full_path(path):
+    """Converts shorter Windows paths with tildes to longer full paths.
+    Path MUST exist to convert.
+
+    Short:
+    c:\users\john~1.rus\appdata\local\temp\2\ingest_bulk\AE34_001
+
+    Long:
+    c:\Users\john.russell\AppData\Local\Temp\2\ingest_bulk\AE34_001
+
+    Args:
+        path (str): Short Windows path with tildes.
+
+    Returns:
+        str: Long Windows path.
+    """
+    tmp = unicode(path)
+
+    get_long_path_name = ctypes.windll.kernel32.GetLongPathNameW
+    buffer = ctypes.create_unicode_buffer(get_long_path_name(tmp, 0, 0))
+    get_long_path_name(tmp, buffer, len(buffer))
+
+    return str(buffer.value)
 
 
 def include_node(node):
@@ -711,73 +836,95 @@ def name_list_clean(name_list, index_of_mismatch):
     return name_list
 
 
-def process_scenes(scn_file_paths, wrk_order):
-    """Process the list of scene files to check in assets.
+def process_scene(scene_file_path, wrk_order):
+    """Process the scene file, checking in assets found in the scene.
 
     Args:
-        scn_file_paths (list[str]): List of scene paths to open and process.
+        scene_file_path (str): Scene path to open and process.
         wrk_order (dict): Work order dictionary.
     """
-    for scene_file_path in scn_file_paths:
-        FileManager.Open(scene_file_path, True)
+    mxs.loadMaxFile(scene_file_path, useFileUnits=True, quiet=True)
+    check_file_io_gamma()
 
-        current_file_path = FileManager.GetFileNameAndPath()
+    # Set Environment render values.
+    Environment.SetMapEnabled(False)
+    # Remove Effects
+    for c in reversed(range(Atomspherics.GetCount())):
+        Atomspherics.Delete(c)
 
-        asset_nodes = get_asset_nodes()
+    current_file_path = FileManager.GetFileNameAndPath()
 
-        asset_data_dict = export_nodes(asset_nodes)
+    # Get the nodes to check in.
+    asset_nodes = get_asset_nodes()
 
-        print("Checking-in Files for scene:\n{}".format(current_file_path))
+    # Export the nodes to their own MAX file.
+    asset_data_dict = export_nodes(asset_nodes)
 
-        for asset_name in asset_data_dict:
-            asset_file_path = asset_data_dict[asset_name].get('max')
-            original_node_name = \
-                asset_data_dict[asset_name].get('original_node')
+    # If DEBUG_SKIP_EXPORT_MAX is True, there is no MAX file to QC or
+    # check in.
+    if DEBUG_SKIP_EXPORT_MAX:
+        print('\tSkipping QC & check-in for all assets in {}'.format(
+            current_file_path))
+        return
 
-            # open file
-            if not asset_file_path:
-                print('Skipping {}'.format(asset_name))
+    # Check in all the assets found.
+    print("QC and Check-in assets for scene:\n{}".format(current_file_path))
+    for asset_name in asset_data_dict:
 
-                continue
+        asset_file_path = asset_data_dict[asset_name].get('max')
+        original_node_name = \
+            asset_data_dict[asset_name].get('original_node')
 
-            print("\tOpening {}".format(asset_file_path))
+        # QC
+        if DEBUG_SKIP_QC:
+            print("\tSkipping QC for {}".format(asset_name))
+        else:
+            # QC asset
+            qc_asset(asset_file_path)
 
-            FileManager.Open(asset_file_path, True)
+        # CHECK-IN
+        if DEBUG_SKIP_CHECKIN:
+            print('\tSkipping Check-in for {}'.format(asset_name))
+            continue
 
-            if not DEBUG_SKIP_CHECKIN:
-                # create Asset
+        description = "Checked-in from 3DS MAX.\n\n" \
+                      "Original File:\n" \
+                      "{}\n\n" \
+                      "Original Node:\n" \
+                      "{}".format(current_file_path, original_node_name)
 
-                asset = create_asset(
-                    SG, LOGGER, SG_ENGINE.context.project, wrk_order,
-                    asset_name, deliverable_type='Asset Ingest Bulk')
+        # Check-in asset
+        check_in_asset(asset_file_path, wrk_order, asset_name, description)
 
-                # Get Task
 
-                task = SG.find_one(
-                    "Task",
-                    [
-                        [
-                            'entity.CustomEntity25.sg_deliverable.CustomEntity24.sg_link.Asset.id',
-                            'is',
-                            asset['id']
-                        ]
-                    ]
-                )
+def qc_asset(asset_file_path):
+    """Renders QC images for the supplied asset.
 
-                # check in
+    Args:
+        asset_file_path (str): Path to MAX file.
 
-                description = "Checked-in from 3DS MAX.\n\n" \
-                              "Original File:\n" \
-                              "{}\n\n" \
-                              "Original Node:\n" \
-                              "{}".format(current_file_path, original_node_name)
-                result = check_in(task['id'], description=description)
+    """
+    # Open file
+    print("\tOpening {}".format(asset_file_path))
+    FileManager.Open(asset_file_path, True)
 
-                print(result)
+    nodes = [c for c in Core.GetRootNode().Children]
+    for node in nodes:
+        node.Select()
 
-    FileManager.Reset(True)
+    Core.EvalMAXScript('group selection name: "QC_Tool"')
+    SelectionManager.ClearNodeSelection(True)
 
-    print('Done.')
+    qc_max_file_path = asset_file_path.replace(".max", "_QC_Tool.max")
+    FileManager.Save(qc_max_file_path, True, True)
+
+    # QC Tool
+    # QC Tool opens file.
+    process_files(
+        [qc_max_file_path],
+        'Lookdev',
+        '.PNG',
+        os.path.dirname(asset_file_path))
 
 
 def similar(str1, str2):
@@ -796,9 +943,18 @@ def similar(str1, str2):
 if __name__ == "__main__":
     work_order = {'type': 'CustomEntity17', 'id': 2232}
 
-    test_file_path = r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_001.max'
-    scene_file_paths = [test_file_path]
+    scene_file_paths = [
+        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_001.max',
+        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_002_forestPack_2011.max',
+        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_003.max',
+    ]
 
-    process_scenes(scene_file_paths, work_order)
+    for scene_file_path in scene_file_paths:
+        process_scene(scene_file_path, work_order)
+
+    # Reset scene.
+    FileManager.Reset(True)
+
+    print('== Ingest Complete ==')
 
     # Core.EvalMAXScript("quitmax #noprompt")
