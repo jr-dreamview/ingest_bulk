@@ -16,8 +16,9 @@ import sgtk
 from utils.sg_create_entities import create_deliverable
 
 # App-specific libraries
-from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3,
-                     Point3, SelectionManager, SuperClassIds, ViewportManager)
+from MaxPlus import (Atomspherics, Core, Environment, FileManager, INode,
+                     Matrix3, Point3, SelectionManager,
+                     SuperClassIds, ViewportManager)
 from pymxs import runtime as mxs
 
 # Get the script folder from shotgun
@@ -48,13 +49,14 @@ from check_in_out import check_in
 script_folder = mxs.execute(mxs_command.format('QC_Batch_Tool'))
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
-from qc_batch_tool import process_files
+from qc_batch_tool import get_qc_tool
 
 
-DEBUG_EXPORT_COUNT = 0
-DEBUG_SKIP_CHECKIN = False
+DEBUG_EXPORT_COUNT = 3
+DEBUG_SKIP_CHECKIN = True
 DEBUG_SKIP_EXPORT_MAX = False
 DEBUG_SKIP_QC = False
+DEBUG_RENDERED_FLAG = 'Omit'  # None or '' is off.
 DEFAULT_PERSP_VIEW_MATRIX = Matrix3(
     Point3(0.707107, 0.353553, -0.612372),
     Point3(-0.707107, 0.353553, -0.612372),
@@ -73,7 +75,7 @@ ORIGIN_TRANSFORM_MATRIX = Matrix3(
 SG_ENGINE = sgtk.platform.current_engine()
 SG = SG_ENGINE.shotgun
 SIMILAR_RATIO = 0.80
-VIEW_PERSP_USER = 7  # Viewport type Perspective User enum
+VIEW_PERSP_USER = 7  # Viewport type "Perspective User" enum
 
 
 def alphanum_key(string, case_sensitive=False):
@@ -191,15 +193,8 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description):
     print("\tOpening {}".format(asset_file_path))
     FileManager.Open(asset_file_path, True)
 
-    qc_renders = None
-    if not DEBUG_SKIP_QC:
-        qc_renders_file_path = \
-            asset_file_path.replace('.max', '_QC_Tool')
-        qc_renders = [os.path.join(qc_renders_file_path, f)
-                      for f in os.listdir(qc_renders_file_path)
-                      if f.lower().endswith('.png')]
-
     # Has the asset been ingested before?  If so, find the previous deliverable.
+    # Returns None if none are found.
     deliverable = SG.find_one(
         "CustomEntity24",
         [['code', 'contains', '{}_Hi Ingest Bulk'.format(asset_name)]])
@@ -221,11 +216,52 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description):
         ]
     )
 
+    qc_renders = None
+    if not DEBUG_SKIP_QC:
+        qc_renders_dir = '{}_QC_Tool'.format(asset_file_path.rsplit('.', 1)[0])
+        if os.path.isdir(qc_renders_dir):
+            qc_renders = [os.path.join(qc_renders_dir, render_file)
+                          for render_file in os.listdir(qc_renders_dir)
+                          if render_file.lower().endswith('.png')]
+
     # Check in MAX file.
+    flag_rendered = 'In Progress'
+    if qc_renders and DEBUG_RENDERED_FLAG:
+        flag_rendered = DEBUG_RENDERED_FLAG
+
     result = check_in(
-        task['id'], rendered=qc_renders, description=description)
+        task['id'],
+        rendered=qc_renders,
+        description=description,
+        flag_rendered=flag_rendered)
 
     print(result)
+
+
+def clean_scene_materials():
+    """Removes any references to unused materials."""
+    # reset material editors
+    for i in range(24):
+        mxs.meditMaterials[i] = mxs.VRayMtl(
+            name=("0" if i < 9 else "") + str(i + 1) + " - Default")
+
+    for i in range(mxs.sme.GetNumViews()):
+        mxs.sme.DeleteView(1, False)
+
+    mxs.sme.CreateView("View 1")
+
+    # reset background
+
+    mxs.environmentMap = None
+    mxs.backgroundColor = mxs.white
+    Environment.SetMapEnabled(False)
+
+    # Remove Effects
+    for c in reversed(range(Atomspherics.GetCount())):
+        Atomspherics.Delete(c)
+
+    # Don't render hidden objects
+    mxs.rendHidden = False
 
 
 def compare_node_names(node1, node2):
@@ -486,11 +522,11 @@ def export_nodes(groups_to_export):
 
 
 def get_all_nodes(nodes=None):
-    """Returns all descendants of a node.
+    """Returns all descendants of a list of nodes.
     If None is provided, it will return all nodes in the scene.
 
     Args:
-        nodes (list[MaxPlus.INode]|None): Nodes to find descendants.
+        nodes (list[MaxPlus.INode]|None): Nodes from which to find descendants.
 
     Returns:
         list[MaxPlus.INode]: List of all nodes.
@@ -843,14 +879,13 @@ def process_scene(scene_file_path, wrk_order):
         scene_file_path (str): Scene path to open and process.
         wrk_order (dict): Work order dictionary.
     """
+    # Open the scene file in Quiet mode.
     mxs.loadMaxFile(scene_file_path, useFileUnits=True, quiet=True)
+    # Check IO gamma.
     check_file_io_gamma()
 
-    # Set Environment render values.
-    Environment.SetMapEnabled(False)
-    # Remove Effects
-    for c in reversed(range(Atomspherics.GetCount())):
-        Atomspherics.Delete(c)
+    # Remove unused textures.
+    clean_scene_materials()
 
     current_file_path = FileManager.GetFileNameAndPath()
 
@@ -867,9 +902,9 @@ def process_scene(scene_file_path, wrk_order):
             current_file_path))
         return
 
-    # Check in all the assets found.
+    # QC and check-in all the assets found.
     print("QC and Check-in assets for scene:\n{}".format(current_file_path))
-    for asset_name in asset_data_dict:
+    for asset_name in sorted(asset_data_dict.keys()):
 
         asset_file_path = asset_data_dict[asset_name].get('max')
         original_node_name = \
@@ -902,7 +937,6 @@ def qc_asset(asset_file_path):
 
     Args:
         asset_file_path (str): Path to MAX file.
-
     """
     # Open file
     print("\tOpening {}".format(asset_file_path))
@@ -915,16 +949,57 @@ def qc_asset(asset_file_path):
     Core.EvalMAXScript('group selection name: "QC_Tool"')
     SelectionManager.ClearNodeSelection(True)
 
-    qc_max_file_path = asset_file_path.replace(".max", "_QC_Tool.max")
+    qc_max_file_path = "{}_QC_Tool.max".format(
+        asset_file_path.rsplit(".", 1)[0])
     FileManager.Save(qc_max_file_path, True, True)
 
     # QC Tool
     # QC Tool opens file.
-    process_files(
+    qc_render(
         [qc_max_file_path],
         'Lookdev',
         '.PNG',
         os.path.dirname(asset_file_path))
+
+
+# "process_files" function from QC batch tool
+def qc_render(files_list, render_mode, render_ext, output_path):
+    """Perform QC renders.
+
+    Args:
+        files_list (list(str)): List of paths to MAX files to QC render.
+        render_mode (str): Render mode: 'Model' or 'Lookdev'
+        render_ext (str): File extension for output QC renders.
+        output_path (str): Directory output path for the QC renders.
+    """
+    # get the qc-tool maxscript object
+    qc_tool = get_qc_tool()
+    if qc_tool:
+        # process the files
+        for f in files_list:
+            f_norm = os.path.normpath(f)
+            print('+ Opening file: {}'.format(f_norm))
+            if mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
+                qc_tool.init()
+                if qc_tool.modelRoot:
+                    if 'Model' in render_mode:
+                        qc_tool.setVal(u"Render Mode", u'Model')
+                        qc_tool.setVal(u"Output Types", render_ext)
+                        # qc_tool.setVal(u"Hero Resolution", 1) # test with 500x500px
+                        # qc_tool.setVal(u"Hero Quality", 1) # test with 0.5 treshold
+                        result = qc_tool.renderAll(outPath=output_path)
+                        if "Render was cancelled!" in result: break
+                    if 'Lookdev' in render_mode:
+                        qc_tool.setVal(u"Render Mode", u'Lookdev')
+                        qc_tool.setVal(u"Output Types", render_ext)
+                        qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
+                        # qc_tool.setVal(u"Hero Quality", 1) # test with 0.5 treshold
+                        result = qc_tool.renderAll(outPath=output_path)
+                        if "Render was cancelled!" in result: break
+                else:
+                    print('Model not found in file: {}'.format(f_norm))
+            else:
+                print('Error opening file: {}'.format(f_norm))
 
 
 def similar(str1, str2):
@@ -943,9 +1018,11 @@ def similar(str1, str2):
 if __name__ == "__main__":
     work_order = {'type': 'CustomEntity17', 'id': 2232}
 
+    search_path = r'C:\Users\john.russell\Documents\3ds Max 2020\scenes'
+
     scene_file_paths = [
-        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_001.max',
-        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_002_forestPack_2011.max',
+        # r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_001.max',
+        # r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_002_forestPack_2011.max',
         r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_003.max',
     ]
 
