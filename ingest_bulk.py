@@ -12,13 +12,11 @@ import time
 import sgtk
 
 # Intra-studio libraries
-# from utils.sg_create_entities import create_asset
-from utils.sg_create_entities import create_deliverable
+from utils.sg_create_entities import create_asset
 
 # App-specific libraries
-from MaxPlus import (Atomspherics, Core, Environment, FileManager, INode,
-                     Matrix3, Point3, SelectionManager,
-                     SuperClassIds, ViewportManager)
+from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3,
+                     Point3, SelectionManager, SuperClassIds, ViewportManager)
 from pymxs import runtime as mxs
 
 # Get the script folder from shotgun
@@ -40,7 +38,7 @@ mxs_command = '''
 '''
 
 # Import Check-in module
-script_folder = mxs.execute(mxs_command.format('Check-In*'))
+script_folder = mxs.execute(mxs_command.format('Check_In*'))
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
 from check_in_out import check_in
@@ -52,17 +50,19 @@ if script_folder not in sys.path:
 from qc_batch_tool import get_qc_tool
 
 
-DEBUG_EXPORT_COUNT = 3
-DEBUG_SKIP_CHECKIN = True
+DEBUG_EXPORT_COUNT_LIMIT = 0
+DEBUG_RENDERED_FLAG = 'Omit'  # None or '' is off.
+DEBUG_SCENE_COUNT_LIMIT = 0
+DEBUG_SKIP_CHECKIN = False
 DEBUG_SKIP_EXPORT_MAX = False
 DEBUG_SKIP_QC = False
-DEBUG_RENDERED_FLAG = 'Omit'  # None or '' is off.
 DEFAULT_PERSP_VIEW_MATRIX = Matrix3(
     Point3(0.707107, 0.353553, -0.612372),
     Point3(-0.707107, 0.353553, -0.612372),
     Point3(0, 0.866025, 0.5),
     Point3(0, 0, -250))
 EXCLUDE_SUPERCLASS_IDS = [SuperClassIds.Light, SuperClassIds.Camera]
+IGNORE_DIRS = ['downloaded', 'productized', 'AI46_006_BROKEN']
 INTERSECTION_DIST = 250.0
 logging.basicConfig()
 LOGGER = logging.getLogger()
@@ -307,44 +307,6 @@ def compare_node_names(node1, node2):
     return index_of_mismatch
 
 
-def create_asset(sg, logger, project, wrk_ordr, name, deliverable_type=None,
-                 deliverable_sub_type='Hi', deliverable=None, **fields):
-    """Creates an asset in shotgun.
-    If a deliverable is not provided, one will be created.
-
-    Args:
-        sg (tank.authentication.shotgun_wrapper.ShotgunWrapper): Shotgun
-            API instance.
-        logger (logging.Logger): Python logger.
-        project (dict): Shotgun project.
-        wrk_ordr (dict): Shotgun entity work order.
-        name (str): Asset name.
-        deliverable_type (str): Deliverable type.
-        deliverable_sub_type (str): Deliverable sub-type.
-        deliverable (dict): Deliverable dictionary.
-        **fields (dict): Keyword filter fields.
-
-    Returns:
-        dict: New asset dictionary.
-    """
-    filters = list()
-    for key, value in fields.items():
-        filters.append([key, 'is', value])
-    new_asset = sg.create('Asset', {'project': project, 'code': name}, filters)
-    if deliverable:
-        sg.update(
-            'CustomEntity24', deliverable.get('id'), {'sg_link': new_asset})
-    else:
-        deliverable_data = {
-            'project': project,
-            'sg_work_order': wrk_ordr,
-            'deliverable_type': deliverable_type,
-            'sub_type': deliverable_sub_type
-        }
-        create_deliverable(sg, logger, deliverable_data, new_asset)
-    return new_asset
-
-
 def export_node(node, name, nodes_hide_state):
     """Save node to another max file.
     Get one node, move it to the origin, move the viewport to see it,
@@ -477,12 +439,12 @@ def export_nodes(groups_to_export):
     # Export
 
     # Debug count
-    total = DEBUG_EXPORT_COUNT
+    total = DEBUG_EXPORT_COUNT_LIMIT
     count = 0
     num_nodes = len(nodes)
 
     export_msg = "Exporting {} nodes..."
-    if DEBUG_EXPORT_COUNT:
+    if DEBUG_EXPORT_COUNT_LIMIT:
         export_msg.replace("...", " (Debug)...")
         num_nodes = total
 
@@ -493,7 +455,7 @@ def export_nodes(groups_to_export):
 
         # If Debug count is > 0, it will limit the number of nodes
         # being exported.
-        if DEBUG_EXPORT_COUNT:
+        if DEBUG_EXPORT_COUNT_LIMIT:
             count += 1
             if count == total:
                 break
@@ -823,6 +785,40 @@ def match_names(nodes):
     return groups, intersections
 
 
+def max_walk(dir_to_walk):
+    """Generator that walks through a directory structure and yields MAX files.
+
+    Args:
+        dir_to_walk (str): Current directory being searched.
+
+    Yields:
+        list[str]: List of paths to MAX files found in directory.
+    """
+    names = sorted(os.listdir(dir_to_walk))
+
+    dirs, max_files = [], []
+
+    for name in names:
+        if os.path.isdir(os.path.join(dir_to_walk, name)):
+            if name not in IGNORE_DIRS:
+                dirs.append(name)
+        else:
+            if name.lower().endswith('.max'):
+                max_files.append(name)
+
+    # If MAX files are found...
+    if max_files:
+        yield [os.path.join(dir_to_walk, f) for f in max_files]
+
+    # If no MAX files are found, keep digging...
+    else:
+        for name in dirs:
+            new_path = os.path.join(dir_to_walk, name)
+            if not os.path.islink(new_path):
+                for x in max_walk(new_path):
+                    yield x
+
+
 def name_list_clean(name_list, index_of_mismatch):
     """Cleans name list of mismatches.
 
@@ -1002,6 +998,67 @@ def qc_render(files_list, render_mode, render_ext, output_path):
                 print('Error opening file: {}'.format(f_norm))
 
 
+def search_and_process(search_path, work_order):
+    """Search given directory for MAX files then process them.
+
+    Args:
+        search_path (str): Directory to search.
+        work_order (dict): Work order dictionary needed to check-in files.
+    """
+    # Manifest files.
+    manifest_file_path = os.path.join(search_path, '__manifest__.txt')
+    current_file_path = os.path.join(search_path, '__current__.txt')
+
+    # If the process was interrupted, read the file path in current file and
+    # restart processing AFTER that file.
+    current = None
+    skip = False
+    if os.path.exists(current_file_path):
+        current_file = open(current_file_path, "r")
+        current = current_file.read()
+        current_file.close()
+        skip = True
+
+    count = 0       # Total count.
+    # If process was interrupted, this is the current count for
+    # this round of processing.
+    cur_count = 0
+
+    # Walk through the search path, file MAX files, process them.
+    for files in max_walk(search_path):
+        if skip:
+            count += 1
+            if current in files:
+                skip = False
+            continue
+
+        # Get MAX file.
+        max_file = files[0]
+
+        # Process the MAX file.
+        process_scene(max_file, work_order)
+
+        # Write to manifest files.
+        manifest_file = open(manifest_file_path, "a")
+        manifest_file.write("{}\n".format(max_file))
+        manifest_file.close()
+        current_file = open(current_file_path, "w")
+        current_file.write(max_file)
+        current_file.close()
+
+        # Increment count.
+        count += 1
+        cur_count += 1
+
+        if DEBUG_SCENE_COUNT_LIMIT and cur_count >= DEBUG_SCENE_COUNT_LIMIT:
+            break
+
+    # os.remove(current_file_path)
+    print("{} total MAX scenes".format(count))
+    print("{} current MAX scenes".format(cur_count))
+    print("Manifest written: {}".format(manifest_file_path))
+
+
 def similar(str1, str2):
     """Are the strings similar enough?
 
@@ -1017,17 +1074,15 @@ def similar(str1, str2):
 
 if __name__ == "__main__":
     work_order = {'type': 'CustomEntity17', 'id': 2232}
+    search_path = r'Q:\Shared drives\DVS_StockAssets\Evermotion'
 
-    search_path = r'C:\Users\john.russell\Documents\3ds Max 2020\scenes'
+    curr_path = FileManager.GetFileNameAndPath()
 
-    scene_file_paths = [
-        # r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_001.max',
-        # r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_002_forestPack_2011.max',
-        r'C:\Users\john.russell\Documents\3ds Max 2020\scenes\AE34_003.max',
-    ]
-
-    for scene_file_path in scene_file_paths:
-        process_scene(scene_file_path, work_order)
+    # If a scene is already open, process it.
+    if curr_path:
+        process_scene(curr_path, work_order)
+    else:
+        search_and_process(search_path, work_order)
 
     # Reset scene.
     FileManager.Reset(True)
