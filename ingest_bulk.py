@@ -98,6 +98,7 @@ INGEST_COMPANY_NAME = 'Evermotion'
 INTERSECTION_DIST = 250.0
 logging.basicConfig()
 LOGGER = logging.getLogger()
+MANIFEST_ASSETS_PATH = None
 MANIFEST_FAILED_PATH = None
 MANIFEST_FILE_PATH = None
 MANIFEST_MOST_RECENT = None  # Path to "current" manifest file.
@@ -1658,6 +1659,12 @@ def process_scene(scn_file_path, wrk_order):
 
             ####################################################################
 
+    global MANIFEST_ASSETS_PATH
+    MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, '__assets__.txt')
+    manifest_assets_file = open(MANIFEST_ASSETS_PATH, "a")
+    manifest_assets_file.write("{}\n".format(scn_file_path))
+    manifest_assets_file.close()
+
     # Get the nodes to check in.
     asset_nodes = get_asset_nodes()
 
@@ -1756,6 +1763,11 @@ def process_scene(scn_file_path, wrk_order):
             SG.update("CustomEntity16", file_collection.get('id'),
                       {'sg_upstream': scene_file_collection})
 
+        if file_collection:
+            manifest_assets_file = open(MANIFEST_ASSETS_PATH, "a")
+            manifest_assets_file.write("\t{}\n".format(asset_name))
+            manifest_assets_file.close()
+
     # Reset scene
     FileManager.Reset(True)
 
@@ -1780,6 +1792,8 @@ def qc_images_add_hdr():
                 os.makedirs(new_hdr_dir)
             shutil.copy(hdr, new_hdr)
         QC_IMAGES.append(new_hdr)
+    for tex_filename in ['groundOpacity_001.png', 'photo_studio_01_4kDarkened.hdr', 'UV_Coded.jpg']:
+        QC_IMAGES.append(os.path.join(qc_tool_folder, r'QC-Tool\Textures\{}'.format(tex_filename)))
 
 
 qc_images_add_hdr()
@@ -1851,16 +1865,15 @@ def qc_vrscene_export(max_file_path):
     qc_tool = get_qc_tool()
     if qc_tool:
         f_norm = os.path.normpath(max_file_path)
-        print('  Opening file: {}'.format(f_norm))
-        if mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
-            render_modes = [u'Lookdev', u'Model']
-
-            qc_tool.init()
-            for render_mode in render_modes:
-
+        for render_mode in [u'Model', u'Lookdev']:
+            print('  Opening file: {}'.format(f_norm))
+            if mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
+                qc_tool.init()
                 qc_tool.setVal(u"Render Mode", render_mode)
                 qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
                 qc_tool.setVal(u'Active Camera', 6)  # Cam_Hero
+                if render_mode == u'Lookdev':
+                    qc_tool.overWhiteMode(1)  # sets background to White
 
                 # # Set lights to invisible so they won't be seen in the
                 # # Cam_Top view.
@@ -1877,6 +1890,11 @@ def qc_vrscene_export(max_file_path):
                     qc_vrscenes = list()
                 qc_vrscenes.append(
                     export_vrscene_file('_Cam_Hero_{}'.format(render_mode)))
+                mxs.saveMaxFile(
+                    f_norm.replace(
+                        '_QC.max',
+                        '_QC_Cam_Hero_{}.max'.format(render_mode)),
+                    quiet=True)
 
     return qc_vrscenes
 
@@ -1900,7 +1918,7 @@ def qc_vrscene_farm_submit(task, file_collection):
         ['sg_published_file_entity_links'])
 
     for pub_file in file_collection.get('sg_published_file_entity_links'):
-        if pub_file.get('name').endswith('.vrscene') and "_QC_Cam_" in \
+        if pub_file.get('name').endswith('.vrscene') and "_QC_" in \
                 pub_file.get('name'):
             pub_files.append(pub_file)
 
@@ -2094,7 +2112,8 @@ if __name__ == "__main__":
         r'Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max'
     ]
     SEARCH_PATH = r'Q:\Shared drives\DVS_StockAssets\Evermotion'
-    work_order = {'type': 'CustomEntity17', 'id': 2232}
+    # work_order = {'type': 'CustomEntity17', 'id': 2232}  # Evermotion
+    work_order = {'type': 'CustomEntity17', 'id': 2566}  # Asset Library
 
     curr_path = FileManager.GetFileNameAndPath()
 
