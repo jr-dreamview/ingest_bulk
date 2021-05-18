@@ -1,4 +1,4 @@
-################################################################################
+########################################################################################################################
 
 
 __author__ = "John Russell <john.russell@dreamview.com>"
@@ -27,44 +27,53 @@ from utils.sg_create_entities import create_asset
 # None
 
 # App-specific libraries
-from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3,
-                     Point3, RenderSettings, SelectionManager,
+from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3, Point3, RenderSettings, SelectionManager,
                      SuperClassIds, ViewportManager)
 from pymxs import runtime as mxs
 
-# Get the script folder from shotgun
-mxs_command = '''
-(
-    local resultPath = undefined
-    global DreamView_Scripts_ScriptsPath
-    if DreamView_Scripts_ScriptsPath != undefined then
-    (
-        local toolsDir = getFilenamePath DreamView_Scripts_ScriptsPath
-        if doesFileExist toolsDir then
-        (
-            local checkDirs = getDirectories (toolsDir + "{}")
-            if checkDirs.count > 0 then resultPath = checkDirs[1]
-        )
-    )
-    resultPath
-)
-'''
+# Get the script folder from shotgun script dir
+
+
+def get_tool_dir(tool_name):
+    """Returns directory of tool name.
+
+    Args:
+        tool_name (str): Name of tool, with wildcards (*).
+
+    Returns:
+        str|None: Path to tool.
+    """
+    result_path = None
+    try:
+        dreamview_scripts_scriptspath = mxs.DreamView_Scripts_ScriptsPath
+    except AttributeError:
+        dreamview_scripts_scriptspath = None
+
+    if dreamview_scripts_scriptspath is not None:
+        tools_dir = os.path.dirname(dreamview_scripts_scriptspath)
+        if os.path.exists(tools_dir):
+            check_dirs = list(mxs.getDirectories(os.path.join(tools_dir, tool_name)))
+            if check_dirs:
+                result_path = check_dirs[0]
+
+    return result_path
+
 
 # Import Check-in module
-script_folder = mxs.execute(mxs_command.format("Check_In*"))
+script_folder = get_tool_dir("Check_In*")
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
 from check_in_out import check_in
 from dvs_max_lib.meta import Meta
 
 # Import Check-out module
-script_folder = mxs.execute(mxs_command.format("Check_Out*"))
+script_folder = get_tool_dir("Check_Out*")
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
 from check_in_out import check_out
 
 # Import QC Batch Tool module
-script_folder = mxs.execute(mxs_command.format("QC_Batch_Tool"))
+script_folder = get_tool_dir("QC_Batch_Tool")
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
 from qc_batch_tool import get_qc_tool
@@ -94,9 +103,8 @@ EXCLUDE_SUPERCLASS_IDS = [SuperClassIds.Light, SuperClassIds.Camera]
 INGEST_COMPANY_ENTITY = None
 INGEST_COMPANY_NAME = None
 # Don't search these directories for MAX files to process.
-IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008",
-               "AI46_006_BROKEN", "AI30_001",
-               "downloaded", "productized"]
+IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN", "AI30_001", "downloaded", 
+               "productized"]
 # Don't process MAX files with these words in the filename.
 IGNORE_IN_MAX_FILE_NAMES = ["corona"]
 INTERSECTION_DIST = 250.0
@@ -115,7 +123,7 @@ ORIGIN_TRANSFORM_MATRIX = Matrix3(
     Point3(0, 0, 0))
 QC_EXPORT = True  # True: Export vrscenes; False: render QC passes in place.
 # Import these images to render QC vrscenes.
-qc_tool_folder = mxs.execute(mxs_command.format("QC-Tool"))
+qc_tool_folder = get_tool_dir("QC-Tool")
 QC_IMAGES = [
     # os.path.join(qc_tool_folder, r"QC-Tool\Textures\UV_Coded.jpg")
 ]
@@ -144,13 +152,11 @@ def alphanum_key(s, case_sensitive=False):
         s (str): Given string.
         case_sensitive (bool): If True, capital letters will go first.
     Returns:
-        list[int|str]: Mixed list of strings and integers in the order they
-            occurred in the given string.
+        list[int|str]: Mixed list of strings and integers in the order they occurred in the given string.
     """
     def try_int(str_chunk, cs_snstv):
         """Convert string to integer if it's a number.
-        In certain cases, ordering filenames takes case-sensitivity
-        into consideration.
+        In certain cases, ordering filenames takes case-sensitivity into consideration.
 
         Windows default sorting behavior:
         ["abc1", "ABC2", "abc3"]
@@ -178,8 +184,7 @@ def alphanum_key(s, case_sensitive=False):
 
     ##########
 
-    return [try_int(chunk, case_sensitive)
-            for chunk in re.split("([0-9]+)", s)]
+    return [try_int(chunk, case_sensitive) for chunk in re.split("([0-9]+)", s)]
 
 
 def check_file_io_gamma():
@@ -200,9 +205,8 @@ def check_file_io_gamma():
     return result
 
 
-def check_in_asset(asset_file_path, wrk_order, asset_name, description,
-                   matrix="", qc_renders=None,
-                   pub_others=None, full_scene=False):
+def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="", qc_renders=None, pub_others=None, 
+                   full_scene=False):
     """Checks-in supplied MAX file as an asset.
 
     Args:
@@ -226,7 +230,7 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description,
 
         # Add images used by QC so vrscenes will render.
         if pub_others is None:
-            pub_others = list()
+            pub_others = []
         pub_others.extend(QC_IMAGES)
 
     if DEBUG_SKIP_MATERIAL_JSON or full_scene:
@@ -245,37 +249,34 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description,
                 try_count += 1
         if json_mat_path is not None:
             if pub_others is None:
-                pub_others = list()
+                pub_others = []
             pub_others.append(json_mat_path)
 
     # Has the asset been ingested before?
-    asset = SG.find_one("Asset",
-                        [["code", "is", asset_name]],
-                        ["code", "sg_company", "sg_published_files",
-                         "sg_asset_package_links"],
-                        [{"field_name": "id", "direction": "desc"}])
+    asset = SG.find_one(
+        "Asset",
+        [["code", "is", asset_name]],
+        ["code", "sg_company", "sg_published_files", "sg_asset_package_links"],
+        [{"field_name": "id", "direction": "desc"}])
 
     if asset is None or get_task(asset.get("id")) is None:
         # Has the asset been ingested before?  If so, find the
         # previous deliverable.
-        deliverable = SG.find_one(
-            "CustomEntity24",
-            [["code", "contains", "{}_Hi Ingest Bulk".format(asset_name)]])
+        deliverable = SG.find_one("CustomEntity24", [["code", "contains", "{}_Hi Ingest Bulk".format(asset_name)]])
 
         # Create Asset
-        asset = create_asset(SG, LOGGER, SG_ENGINE.context.project, wrk_order,
-                             asset_name, deliverable_type="Asset Ingest Bulk",
-                             deliverable=deliverable)
+        asset = create_asset(SG, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name, 
+                             deliverable_type="Asset Ingest Bulk", deliverable=deliverable)
 
-        asset = SG.find_one("Asset",
-                            [["id", "is", asset.get("id")]],
-                            ["code", "sg_company", "sg_published_files",
-                             "sg_asset_package_links"])
+        asset = SG.find_one(
+            "Asset", 
+            [["id", "is", asset.get("id")]], 
+            ["code", "sg_company", "sg_published_files",
+             "sg_asset_package_links"])
 
     # Make sure Company column is filled.
     if not asset.get("sg_company"):
-        SG.update("Asset", asset.get("id"),
-                  {"sg_company": [INGEST_COMPANY_ENTITY]})
+        SG.update("Asset", asset.get("id"), {"sg_company": [INGEST_COMPANY_ENTITY]})
 
     # Get Task from newly created Asset.
     task = get_task(asset.get("id"))
@@ -307,14 +308,13 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description,
     # Update published files with matrix transform data.
     if not full_scene:
         for pub_file in file_collection.get("sg_published_file_entity_links"):
-            pub_file = SG.find_one("PublishedFile",
-                                   [["id", "is", pub_file.get("id")]],
-                                   ["code", "sg_context",
-                                    "sg_source_transform_matrix"])
+            pub_file = SG.find_one(
+                "PublishedFile",
+                [["id", "is", pub_file.get("id")]],
+                ["code", "sg_context", "sg_source_transform_matrix"])
 
             if pub_file.get("sg_context") in ["geo_abc_exported", "geo_max"]:
-                SG.update("PublishedFile", pub_file.get("id"),
-                          {"sg_source_transform_matrix": matrix})
+                SG.update("PublishedFile", pub_file.get("id"), {"sg_source_transform_matrix": matrix})
 
         # Get metadata for asset.
         asset_meta_data = get_asset_metadata()
@@ -330,12 +330,9 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description,
                 "sg_mdl_polygon_count": asset_meta_data.get("poly_count"),
                 "sg_mdl_vertex_count": asset_meta_data.get("vert_count"),
                 "sg_mtl_bitmap_count": asset_meta_data.get("mtl_bitmap_count"),
-                "sg_mtl_material_count":
-                    asset_meta_data.get("mtl_material_count"),
-                "sg_mtl_roughness_count":
-                    asset_meta_data.get("mtl_roughness_count"),
-                "sg_mtl_uv_tiles_count":
-                    asset_meta_data.get("mtl_uv_tiles_count"),
+                "sg_mtl_material_count": asset_meta_data.get("mtl_material_count"),
+                "sg_mtl_roughness_count": asset_meta_data.get("mtl_roughness_count"),
+                "sg_mtl_uv_tiles_count": asset_meta_data.get("mtl_uv_tiles_count"),
             }
         )
 
@@ -375,39 +372,41 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
             return None
         if "images" in os.listdir(current_path):
             images_path = os.path.join(current_path, "images")
-            return [os.path.join(images_path, f)
-                    for f in os.listdir(images_path)]
+            return [os.path.join(images_path, f) for f in os.listdir(images_path)]
         return find_pre_rendered_images(os.path.dirname(current_path))
 
     ##########
 
     scene_name = FileManager.GetFileName().rsplit(".", 1)[0]
 
-    scene_description = "Checked-in from 3DS MAX.\n\nFull scene.\n\n" \
-                        "Original File:\n{}".format(current_file_path)
+    scene_description = (
+        "Checked-in from 3DS MAX.\n"
+        "\n"
+        "Full scene.\n"
+        "\n"
+        "Original File:\n"
+        "{}".format(current_file_path))
 
-    scene_checkin_dir = os.path.join(
-        SEARCH_PATH,
-        "__ingest_bulk__",
-        scene_name)
+    scene_checkin_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
 
     # Make the export directory if it doesn't exist.
     if not os.path.isdir(scene_checkin_dir):
         os.makedirs(scene_checkin_dir)
 
-    scene_checkin_path = \
-        os.path.join(scene_checkin_dir, FileManager.GetFileName())
+    scene_checkin_path = os.path.join(scene_checkin_dir, FileManager.GetFileName())
 
     FileManager.Save(scene_checkin_path, True, True)
 
     ############################################################################
 
     # Check-in the scene.
-    file_collection = check_in_asset(scene_checkin_path, wrk_order,
-                                     scene_name, scene_description,
-                                     qc_renders=find_pre_rendered_images(
-                                         os.path.dirname(scn_file_path)),
-                                     full_scene=True)
+    file_collection = check_in_asset(
+        scene_checkin_path, 
+        wrk_order,
+        scene_name, 
+        scene_description,
+        qc_renders=find_pre_rendered_images(os.path.dirname(scn_file_path)),
+        full_scene=True)
 
     ############################################################################
 
@@ -435,8 +434,7 @@ def clean_scene_materials():
     """Removes any references to unused materials."""
     # reset material editors
     for i in range(24):
-        mxs.meditMaterials[i] = mxs.VRayMtl(
-            name=("0" if i < 9 else "") + str(i + 1) + " - Default")
+        mxs.meditMaterials[i] = mxs.VRayMtl(name="{}{} - Default".format(("0" if i < 9 else ""), str(i + 1)))
 
     for i in range(mxs.sme.GetNumViews()):
         mxs.sme.DeleteView(1, False)
@@ -466,7 +464,7 @@ def clean_name(name_string):
     """Remove non-printable characters from filename.
 
     Args:
-        name_string:
+        name_string (str): Name to clean.
 
     Returns:
         str: Filename with non-printable characters removed.
@@ -475,13 +473,13 @@ def clean_name(name_string):
 
 
 def clean_string(input_str):
-    """
+    """Cleans given string.
 
     Args:
-        input_str (str):
+        input_str (str): String to clean.
 
     Returns:
-        str:
+        str: Cleaned string.
     """
     if not isinstance(input_str, basestring):
         input_str = str(input_str)
@@ -496,32 +494,41 @@ def clean_string(input_str):
 
 
 def collect_scene_files():
-    """
+    """Collect scene file data into dictionary.
 
     Returns:
-        dict:
+        dict: File path node data.
+            ::
+            {
+                file_path: {
+                                node_object: {
+                                                  "path_attr": [path_property],
+                                             },
+                           },
+            }
     """
-
     def get_all_external_files():
-        """
+        """Returns paths to all external files used in the scene.
 
         Returns:
-
+            list[str]: Paths to external files used in the scene.
         """
-        collect_script = u"(all_files = #()\n"
-        collect_script += u"fn addFile f = append all_files f\n"
-        collect_script += u"enumeratefiles addFile\n"
-        collect_script += u"all_files)\n"
-        return mxs.execute(collect_script)
+        all_files = []
+        mxs.enumerateFiles(all_files.append)
+        return all_files
 
     def get_current_filename_nodes(max_objects=None):
-        """
+        """Get current filename nodes.
 
         Args:
-            max_objects:
+            max_objects (list|None):
 
         Returns:
-
+            dict: Current objects.
+                ::
+                {
+                    node_object: property_name,
+                }
         """
         current_objects = {}
         u_filename = u"filename"
@@ -532,8 +539,7 @@ def collect_scene_files():
         if max_objects:
             prop_baseobject = mxs.name(u"baseobject")
             for obj in max_objects:
-                if mxs.isProperty(obj, prop_baseobject) and mxs.isProperty(
-                        obj.baseobject, prop_filename):
+                if mxs.isProperty(obj, prop_baseobject) and mxs.isProperty(obj.baseobject, prop_filename):
                     current_objects[obj.baseobject] = u_filename
                 elif mxs.isProperty(obj, prop_filename):
                     current_objects[obj] = u_filename
@@ -565,19 +571,17 @@ def collect_scene_files():
     # collect nodes for each file
     all_nodes = get_current_filename_nodes()
     for n in all_nodes:
-        node_prop = all_nodes[n]
+        node_prop = all_nodes.get(n)
         file_name = mxs.getProperty(n, mxs.name(node_prop))
         if file_name:
             used_file_name = mxs.mapPaths.getFullFilePath(file_name)
             if used_file_name and file_name != used_file_name:
                 file_name = used_file_name
-                mxs.setProperty(n, mxs.name(node_prop),
-                                u"{}".format(used_file_name))
+                mxs.setProperty(n, mxs.name(node_prop), u"{}".format(used_file_name))
             if file_name not in files_dict:
                 files_dict[file_name] = {}
-            if n not in files_dict[file_name]:
-                files_dict[file_name][n] = {
-                    "path_attrs": [node_prop]}
+            if n not in files_dict.get(file_name):
+                files_dict[file_name][n] = {"path_attrs": [node_prop]}
 
     return files_dict
 
@@ -593,13 +597,17 @@ def export_material_json(asset_file_path):
         str: JSON file output path.
     """
     def get_properties(obj_material):
-        """
+        """Get properties from object material.
 
         Args:
             obj_material (Any): Material or property of material.
 
         Returns:
             dict: Dictionary mimicking material network.
+                ::
+                {
+                    property_name: property_value
+                }
         """
         # cache maxscript refs
         array_class = mxs.Array
@@ -616,11 +624,9 @@ def export_material_json(asset_file_path):
 
         obj_class = class_of(obj_material)
         obj_super_class = superclass_of(obj_material)
-        if obj_material is None or obj_class is None or \
-                obj_class == undefined_class:
+        if obj_material is None or obj_class is None or obj_class == undefined_class:
             result = None
-        elif obj_class == string_class or obj_class == boolean_class or \
-                obj_super_class == number_class:
+        elif obj_class == string_class or obj_class == boolean_class or obj_super_class == number_class:
             result = obj_material
         elif obj_super_class == value_class:
             # result = str(obj_material)
@@ -664,8 +670,7 @@ def export_material_json(asset_file_path):
 
     json_path = "{}_mat_network.json".format(asset_file_path.rsplit(".", 1)[0])
     with io.open(json_path, "w", encoding="utf8") as json_file:
-        json_file.write(
-            unicode(json.dumps(json_dict, ensure_ascii=False, indent=4)))
+        json_file.write(unicode(json.dumps(json_dict, ensure_ascii=False, indent=4)))
 
     return json_path
 
@@ -684,7 +689,7 @@ def export_node(node, name, nodes_hide_state, export_dir):
 
     Returns:
         dict[str, str]: Dictionary of node stats.
-            (i.e. 'max': file_path, 'original_node': node name)
+            (i.e. "max": file_path, "original_node": node name)
     """
     def get_transform_matrix(nd):
         """Returns string representation of 4x3 transform matrix.
@@ -695,9 +700,9 @@ def export_node(node, name, nodes_hide_state, export_dir):
             tuple(
                 [
                     float(x)
-                    if '.' in x
+                    if "." in x
                     else int(x)
-                    for x in re.sub('[()]', '', s).split(', ')])
+                    for x in re.sub("[()]", "", s).split(", ")])
             for s in matrix_str.split("), ")]
 
         Args:
@@ -725,14 +730,10 @@ def export_node(node, name, nodes_hide_state, export_dir):
 
     ####################
 
-    node_export_data = {
-        "max": "",
-        "original_node": node.Name,
-        "original_t_matrix": get_transform_matrix(node),
-    }
+    node_export_data = {"max": "", "original_node": node.Name, "original_t_matrix": get_transform_matrix(node)}
 
     for n in get_all_nodes([node]):
-        n.Hide = nodes_hide_state[n.Name]
+        n.Hide = nodes_hide_state.get(n.Name)
 
     node_pos = node.Position
     node.Position = ORIGIN_POSITION
@@ -759,20 +760,15 @@ def export_node(node, name, nodes_hide_state, export_dir):
     if DEBUG_SKIP_EXPORT_MAX:
         print("\tSkipping exporting MAX file for {}".format(name))
     else:
-        save_dir = os.path.join(
-            export_dir,
-            "assets")
+        save_dir = os.path.join(export_dir, "assets")
 
         # Make the export directory if it doesn't exist.
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
-        save_path = os.path.join(
-            save_dir, "{}.max".format(name))
+        save_path = os.path.join(save_dir, "{}.max".format(name))
 
         node.Select()
-        FileManager.SaveNodes(
-            SelectionManager.GetNodes(),
-            save_path)
+        FileManager.SaveNodes(SelectionManager.GetNodes(), save_path)
         print("\tExporting MAX file: {}".format(save_path))
         node_export_data["max"] = save_path
         SelectionManager.ClearNodeSelection(True)
@@ -796,7 +792,7 @@ def export_nodes(groups_to_export, export_dir):
     Returns:
         dict[str, dict[str, str]]: Dictionary of lists of filepaths of
             exported files.
-            Ex. asset_name: {'max': max_file_path, 'original node': node_name}
+            Ex. asset_name: {"max": max_file_path, "original node": node_name}
     """
     nodes_data_dict = {}
     nodes_hide_state = {}
@@ -842,13 +838,10 @@ def export_nodes(groups_to_export, export_dir):
     # Make a list of (node, name) tuples.
     # For every node group, save one node to its own MAX file.
     nodes = [
-        (groups_to_export[group_name][0],
-         clean_name(groups_to_export[group_name][0].Name))
+        (groups_to_export.get(group_name)[0], clean_name(groups_to_export.get(group_name)[0].Name))
         for group_name in groups_to_export if group_name != "_UNIQUE_NODES_"]
     # Add the left over nodes.
-    nodes.extend(
-        [(node, clean_name(node.Name))
-         for node in groups_to_export.get("_UNIQUE_NODES_")])
+    nodes.extend([(node, clean_name(node.Name)) for node in groups_to_export.get("_UNIQUE_NODES_")])
     # sort by node name
     nodes.sort(key=lambda x: alphanum_key(x[1].lower()))
 
@@ -870,8 +863,7 @@ def export_nodes(groups_to_export, export_dir):
     ############################################################################
 
     for node, name in nodes:
-        nodes_data_dict[name] = export_node(
-            node, name, nodes_hide_state, export_dir)
+        nodes_data_dict[name] = export_node(node, name, nodes_hide_state, export_dir)
 
         # If Debug count is > 0, it will limit the number of nodes
         # being exported.
@@ -885,7 +877,7 @@ def export_nodes(groups_to_export, export_dir):
     SelectionManager.ClearNodeSelection(True)
     # Set all nodes previous visible state.
     for node in get_all_nodes():
-        node.Hide = nodes_hide_state[node.Name]
+        node.Hide = nodes_hide_state.get(node.Name)
 
     # Reset viewport to original position.
     if avef:
@@ -915,27 +907,27 @@ def export_vrscene_file(suffix=""):
     Returns:
         str: Path to exported vrscene.
     """
-    result = mxs.execute('''
-    (
-        local result = #()
-        local thisFile = maxFilePath + maxFileName
-        local thisFileBase = getFilenamePath thisFile + getFilenameFile thisFile
-        if classof VRayRT == RendererClass then
-        (
-            local this_renderer = renderers.current
-            if classOf this_renderer != VRayRT then renderers.current = VRayRT()
+    result = None
+    this_file = os.path.join(mxs.maxFilePath, mxs.maxFileName)
+    this_file_folder = mxs.getFilenamePath(this_file)
+    this_file_name = mxs.getFilenameFile(this_file)
+    if mxs.classOf(mxs.VRayRT) == mxs.RendererClass:
+        this_renderer = mxs.renderers.current
+        if mxs.classOf(this_renderer) != mxs.VRayRT:
+            mxs.renderers.current = mxs.VRayRT()
 
-            local vrsceneFile = thisFileBase + "{}.vrscene"
-            if doesFileExist vrsceneFile then deleteFile vrsceneFile
-            vrayExportVRScene vrsceneFile exportCompressed:true exportHEXFormatMesh:true exportHEXFormatTransf:false separateFiles:false stripPaths:true
-            if doesFileExist vrsceneFile then append result vrsceneFile
+        vrscene_file = os.path.join(this_file_folder, "{}{}.vrscene".format(this_file_name, suffix))
+        if os.path.exists(vrscene_file):
+            os.remove(vrscene_file)
+        mxs.vrayExportVRScene(vrscene_file, exportCompressed=True, exportHEXFormatMesh=True,
+                              exportHEXFormatTransf=False, separateFiles=False, stripPaths=True)
+        if os.path.exists(vrscene_file):
+            result = vrscene_file
 
-            if renderers.current != this_renderer then renderers.current = this_renderer
-        )
-        result
-    )
-    '''.format(suffix))
-    return str(list(result)[0])
+        if mxs.renderers.current != this_renderer:
+            mxs.renderers.current = this_renderer
+
+    return result
 
 
 def get_all_nodes(nodes=None):
@@ -964,17 +956,19 @@ def get_asset_metadata():
 
     Returns:
         dict: Metadata for current scene.
-            Examples:
-                'bbox_depth' (float): Depth of bounding box.
-                'bbox_height' (float): Height of bounding box.
-                'bbox_width' (float): Width of bounding box.
-                'bbox_units' (str): Units of bounding box.
-                'mtl_bitmap_count' (int): Material bitmap count.
-                'mtl_material_count' (int): Material count.
-                'mtl_roughness_count' (int): Material roughness count.
-                'mtl_uv_tiles_count' (int): Material UV tiles count.
-                'poly_count' (int): Polygon count.
-                'vert_count' (int): Vertex count.
+            ::
+            {
+                "bbox_depth" (float): Depth of bounding box.
+                "bbox_height" (float): Height of bounding box.
+                "bbox_width" (float): Width of bounding box.
+                "bbox_units" (str): Units of bounding box.
+                "mtl_bitmap_count" (int): Material bitmap count.
+                "mtl_material_count" (int): Material count.
+                "mtl_roughness_count" (int): Material roughness count.
+                "mtl_uv_tiles_count" (int): Material UV tiles count.
+                "poly_count" (int): Polygon count.
+                "vert_count" (int): Vertex count.
+            }
     """
     def get_group_members(root_node):
         """Returns all descendants of root_node.
@@ -985,7 +979,7 @@ def get_asset_metadata():
         Returns:
             list[pymxs.MXSWrapperBase]: List of all descendants of root_node.
         """
-        result = list()
+        result = []
         for obj in root_node.children:
             if mxs.isGroupMember(obj):
                 result.append(obj)
@@ -997,7 +991,7 @@ def get_asset_metadata():
         all descendants.
 
         Args:
-            root_node (pymxs.MXSWrapperBase):
+            root_node (pymxs.MXSWrapperBase): Parent node.
 
         Returns:
             list[int]: List pair of poly_count and vert_count.
@@ -1018,10 +1012,10 @@ def get_asset_metadata():
     meta = Meta()
     collected_nodes = meta.get_collected_nodes()
 
-    mtl_bitmap_count = len(collected_nodes["texture_files_unique"])
-    mtl_material_count = len(collected_nodes["material_nodes"])
-    mtl_roughness_count = len(collected_nodes["material_vray_roughness_off"])
-    mtl_uv_tiles_count = len(collected_nodes["num_uv_maps"])
+    mtl_bitmap_count = len(collected_nodes.get("texture_files_unique"))
+    mtl_material_count = len(collected_nodes.get("material_nodes"))
+    mtl_roughness_count = len(collected_nodes.get("material_vray_roughness_off"))
+    mtl_uv_tiles_count = len(collected_nodes.get("num_uv_maps"))
 
     # if the bbox dimensions are this large...
     # something is wrong. The SG field
@@ -1033,25 +1027,25 @@ def get_asset_metadata():
     if collected_nodes["bbox_dim"]["w"] > 1.00E9:
         collected_nodes["bbox_dim"]["w"] = None
     bbox = {
-        "units": collected_nodes["unit_types"]["Display Units"],
-        "depth": collected_nodes["bbox_dim"]["d"],
-        "height": collected_nodes["bbox_dim"]["h"],
-        "width": collected_nodes["bbox_dim"]["w"]}
+        "units": collected_nodes["unit_types"].get("Display Units"),
+        "depth": collected_nodes["bbox_dim"].get("d"),
+        "height": collected_nodes["bbox_dim"].get("h"),
+        "width": collected_nodes["bbox_dim"].get("w")}
 
     top_nodes = list(mxs.rootScene[mxs.name("world")].object.children)
     poly_count, vert_count = get_total_poly_and_vert_count(top_nodes[0])
 
-    scene_meta = dict()
-    scene_meta["bbox_units"] = bbox["units"]
-    scene_meta["bbox_depth"] = bbox["depth"]
-    scene_meta["bbox_height"] = bbox["height"]
-    scene_meta["bbox_width"] = bbox["width"]
-    scene_meta["mtl_bitmap_count"] = mtl_bitmap_count
-    scene_meta["mtl_material_count"] = mtl_material_count
-    scene_meta["mtl_roughness_count"] = mtl_roughness_count
-    scene_meta["mtl_uv_tiles_count"] = mtl_uv_tiles_count
-    scene_meta["poly_count"] = poly_count
-    scene_meta["vert_count"] = vert_count
+    scene_meta = {
+        "bbox_units": bbox.get("units"), 
+        "bbox_depth": bbox.get("depth"), 
+        "bbox_height": bbox.get("height"),
+        "bbox_width": bbox.get("width"), 
+        "mtl_bitmap_count": mtl_bitmap_count,
+        "mtl_material_count": mtl_material_count, 
+        "mtl_roughness_count": mtl_roughness_count,
+        "mtl_uv_tiles_count": mtl_uv_tiles_count, 
+        "poly_count": poly_count, 
+        "vert_count": vert_count}
 
     return scene_meta
 
@@ -1072,8 +1066,7 @@ def get_asset_nodes():
                  if not node.Object.SuperClassID == SuperClassIds.Helper]
     group_nodes = [
         node for node in top_level_nodes
-        if node.Object.SuperClassID == SuperClassIds.Helper and
-        node.GetNumChildren()]
+        if node.Object.SuperClassID == SuperClassIds.Helper and node.GetNumChildren()]
 
     matched_geo_nodes, ints1 = match_names(geo_nodes)
     matched_group_nodes, ints2 = match_names(group_nodes)
@@ -1085,19 +1078,15 @@ def get_asset_nodes():
         if grp_name in matched_geo_nodes:
             matched_nodes[grp_name].extend(matched_group_nodes[grp_name])
         else:
-            matched_nodes[grp_name] = matched_group_nodes[grp_name]
+            matched_nodes[grp_name] = matched_group_nodes.get(grp_name)
 
     # Print the full list of organized nodes.
     print("==========\n")
     print("Matched nodes:\n")
 
-    for grp_name in \
-            sorted(matched_nodes.keys(), key=lambda x: alphanum_key(x)):
+    for grp_name in sorted(matched_nodes.keys(), key=lambda x: alphanum_key(x)):
         print(grp_name)
-        for node in \
-                sorted(
-                    matched_nodes[grp_name],
-                    key=lambda x: alphanum_key(x.Name)):
+        for node in sorted(matched_nodes.get(grp_name), key=lambda x: alphanum_key(x.Name)):
             print("\t{}".format(node.Name))
 
     print("==========\n")
@@ -1150,7 +1139,7 @@ def is_max_file_path_clean(path):
     Returns:
         bool: Is the path to the MAX file clean of words to avoid?
     """
-    elements = list()
+    elements = []
     for e in IGNORE_IN_MAX_FILE_NAMES:
         if e.lower() in path.lower():
             elements.append(e)
@@ -1169,11 +1158,9 @@ def include_node(node):
     """
     if node.Object.SuperClassID in EXCLUDE_SUPERCLASS_IDS:
         return False
-    if node.Object.SuperClassID == SuperClassIds.Helper and \
-            not node.GetNumChildren:
+    if node.Object.SuperClassID == SuperClassIds.Helper and not node.GetNumChildren:
         return False
-    if node.Object.SuperClassID == SuperClassIds.GeomObject and \
-            node.VertexCount == 0:
+    if node.Object.SuperClassID == SuperClassIds.GeomObject and node.VertexCount == 0:
         return False
     if node.GetMaterial() is None:
         return False
@@ -1188,25 +1175,6 @@ def include_node(node):
     if "vray" in node.Name.lower():
         return False
     return True
-
-
-# def intersect_check(node1, node2):
-#     """Do these nodes intersect?
-#
-#     Args:
-#         node1 (MaxPlus.INode): Node to check intersections.
-#         node2 (MaxPlus.INode): Node to check intersections.
-#
-#     Returns:
-#         bool: Do these nodes intersect?
-#     """
-#     return Core.EvalMAXScript(
-#         "intersects ${} ${}".format(node1.Name, node2.Name)
-#     ).GetBool() and \
-#         Core.EvalMAXScript(
-#             "distance ${} ${}".format(node1.Name, node2.Name)
-#         ).Get() < INTERSECTION_DIST and \
-#         similar(node1.Name, node2.Name)
 
 
 def match_names(nodes):
@@ -1231,8 +1199,7 @@ def match_names(nodes):
         """
         # If they're both group nodes and they have the have the same number
         # of children...
-        if (node1.Object.SuperClassID == SuperClassIds.Helper and
-                node2.Object.SuperClassID == SuperClassIds.Helper):
+        if node1.Object.SuperClassID == SuperClassIds.Helper and node2.Object.SuperClassID == SuperClassIds.Helper:
             node1_children = get_all_nodes([node1])
             node2_children = get_all_nodes([node2])
             if len(node1_children) != len(node2_children):
@@ -1240,21 +1207,15 @@ def match_names(nodes):
 
             # If the total number of vertices between the children
             # are equal...
-            if sum([n.VertexCount for n in node1_children]) != \
-                    sum([n.VertexCount for n in node2_children]):
+            if sum([n.VertexCount for n in node1_children]) != sum([n.VertexCount for n in node2_children]):
                 return False
 
-            if sorted([child.GetMaterial().GetName()
-                       for child in node1_children if child.GetMaterial()]) == \
-                    sorted([child.GetMaterial().GetName()
-                            for child in node2_children
-                            if child.GetMaterial()]):
+            if (sorted([child.GetMaterial().GetName() for child in node1_children if child.GetMaterial()]) 
+                    == sorted([child.GetMaterial().GetName() for child in node2_children if child.GetMaterial()])):
                 return True
         else:
-            if node1.VertexCount == node2.VertexCount and \
-                    node1.GetMaterial() and node2.GetMaterial() and \
-                    node1.GetMaterial().GetName() == \
-                    node2.GetMaterial().GetName():
+            if (node1.VertexCount == node2.VertexCount and node1.GetMaterial() 
+                    and node2.GetMaterial() and node1.GetMaterial().GetName() == node2.GetMaterial().GetName()):
                 return True
         return False
 
@@ -1333,8 +1294,7 @@ def match_names(nodes):
         # If the mismatch string is alphanumeric, get rid of the
         # numbers and put the remaining string back in the name list.
         if not mismatch_str.isalpha() and not mismatch_str.isdigit():
-            mismatch_str = "".join(
-                [s for s in alphanum_key(mismatch_str) if type(s) != int])
+            mismatch_str = "".join([s for s in alphanum_key(mismatch_str) if type(s) != int])
 
             name_list[indx_of_mismatch] = mismatch_str
 
@@ -1387,8 +1347,7 @@ def match_names(nodes):
                 if not check_geo(nodes[i], nodes[j]):
                     continue
 
-                index_of_mismatch_compare = \
-                    compare_node_names(nodes[i], nodes[j])
+                index_of_mismatch_compare = compare_node_names(nodes[i], nodes[j])
 
                 # An appropriate mismatch wasn't found.  Move on to the
                 # next node.
@@ -1401,8 +1360,7 @@ def match_names(nodes):
                 if index_of_mismatch is None:
                     index_of_mismatch = index_of_mismatch_compare
                     # Get the cleaned version of the name list.
-                    node1_name_list = name_list_clean(
-                        node1_name_list, index_of_mismatch)
+                    node1_name_list = name_list_clean(node1_name_list, index_of_mismatch)
 
                 # We need to avoid the possibility of false positives:
                 # ["AE34", "002", "lilly", "02"] <!=>
@@ -1415,8 +1373,7 @@ def match_names(nodes):
                     continue
 
                 # Get the cleaned version of the name list.
-                node2_name_list = name_list_clean(
-                    nodes[j].Name.split("_"), index_of_mismatch)
+                node2_name_list = name_list_clean(nodes[j].Name.split("_"), index_of_mismatch)
 
                 # If two nodes truly belong to a group, if you clean the
                 # mismatching string from their name lists, the remaining name
@@ -1471,8 +1428,7 @@ def match_names(nodes):
                 matches.append(nodes[j])
                 groups[matching_str].append(nodes[j])
 
-                print("Nodes \"{}\" and \"{}\" match".format(
-                    nodes[i].Name, nodes[j].Name))
+                print("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
 
             # # Find nodes that belong together in a group...
             # if intersect_check(nodes[i], nodes[j]):
@@ -1582,9 +1538,9 @@ def process_scene(scn_file_path, wrk_order):
         Returns:
             list: List of filenames whose paths are missing.
         """
-        print(list(mxs.execute(
-            u"(mf = #(); fn af f = append mf f; "
-            u"enumeratefiles af #missing; mf)")))
+        mf = []
+        mxs.enumerateFiles(mf.append, mxs.Name("missing"))
+        print(mf)
         return test_files_names([collect_scene_files()])
 
     def remove_added_session_paths():
@@ -1598,10 +1554,18 @@ def process_scene(scn_file_path, wrk_order):
                 mxs.sessionPaths.delete(mxs.Name("map"), i)
 
     def test_files_names(file_collections):
-        """
+        """Tests each name for non-ascii characters.
 
         Args:
-            file_collections:
+            file_collections: File path node data.
+                ::
+                {
+                     file_path: {
+                                     node_object: {
+                                                       "path_attr": [path_property]
+                                                  }
+                                }
+                }
 
         Returns:
 
@@ -1609,14 +1573,15 @@ def process_scene(scn_file_path, wrk_order):
         missing_paths = []
         non_unicode = []
         for file_list in file_collections:
-            if file_list:
-                for f in file_list:
-                    if not os.path.exists(f):
-                        missing_paths.append(f)
-                    try:
-                        unicode(f).encode("ascii")
-                    except UnicodeEncodeError:
-                        non_unicode.append(f)
+            if not file_list:
+                continue
+            for f in file_list:
+                if not os.path.exists(f):
+                    missing_paths.append(f)
+                try:
+                    unicode(f).encode("ascii")
+                except UnicodeEncodeError:
+                    non_unicode.append(f)
         if missing_paths:
             msg = "Missing the following paths:\n{}".format(
                 "\n".join(missing_paths))
@@ -1633,10 +1598,7 @@ def process_scene(scn_file_path, wrk_order):
 
     scene_name = FileManager.GetFileName().rsplit(".", 1)[0]
 
-    scene_ingest_dir = os.path.join(
-        SEARCH_PATH,
-        "__ingest_bulk__",
-        scene_name)
+    scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
 
     # Check IO gamma.
     check_file_io_gamma()
@@ -1663,10 +1625,8 @@ def process_scene(scn_file_path, wrk_order):
 
     if not DEBUG_SKIP_SCENE_CHECKIN:
         if missing_files:
-            print("Missing the following files:\n{}".format(
-                "\n".join(missing_files)))
-            print("The scene {} is missing files.  Skipping scene.".format(
-                os.path.basename(scn_file_path)))
+            print("Missing the following files:\n{}".format("\n".join(missing_files)))
+            print("The scene {} is missing files.  Skipping scene.".format(os.path.basename(scn_file_path)))
 
             # Reset scene
             FileManager.Reset(True)
@@ -1682,8 +1642,7 @@ def process_scene(scn_file_path, wrk_order):
             ####################################################################
 
             print("Check-in scene {}.".format(os.path.basename(scn_file_path)))
-            scene_file_collection = check_in_scene(
-                current_file_path, scn_file_path, wrk_order)
+            scene_file_collection = check_in_scene(current_file_path, scn_file_path, wrk_order)
 
             ####################################################################
 
@@ -1703,22 +1662,18 @@ def process_scene(scn_file_path, wrk_order):
     # If DEBUG_SKIP_EXPORT_MAX is True, there is no MAX file to QC or
     # check in.
     if DEBUG_SKIP_EXPORT_MAX:
-        print("\tSkipping QC & check-in for all assets in {}".format(
-            current_file_path))
+        print("\tSkipping QC & check-in for all assets in {}".format(current_file_path))
         return False
 
     if scene_file_collection is None:
-        print("\tScene check-in failed.  Skipping QC and check-in for all "
-              "assets in {}".format(current_file_path))
+        print("\tScene check-in failed.  Skipping QC and check-in for all assets in {}".format(current_file_path))
         return False
 
     # QC and check-in all the assets found.
     print("QC and Check-in assets for scene:\n{}".format(current_file_path))
-    for asset_name in \
-            sorted(asset_data_dict.keys(), key=lambda x: alphanum_key(x)):
+    for asset_name in sorted(asset_data_dict.keys(), key=lambda x: alphanum_key(x)):
         asset_file_path = asset_data_dict[asset_name].get("max")
-        original_node_name = \
-            asset_data_dict[asset_name].get("original_node")
+        original_node_name = asset_data_dict[asset_name].get("original_node")
         original_t_matrix = asset_data_dict[asset_name].get("original_t_matrix")
 
         qc_renders = None
@@ -1742,12 +1697,10 @@ def process_scene(scn_file_path, wrk_order):
 
             # Make QC directories.
             max_file_name = os.path.basename(asset_file_path).rsplit(".", 1)[0]
-            qc_tool_exports_dir = "{}_QC".format(
-                asset_file_path.rsplit(".", 1)[0])
+            qc_tool_exports_dir = "{}_QC".format(asset_file_path.rsplit(".", 1)[0])
             if not os.path.isdir(qc_tool_exports_dir):
                 os.makedirs(qc_tool_exports_dir)
-            qc_max_file_path = "{}_QC.max".format(
-                os.path.join(qc_tool_exports_dir, max_file_name))
+            qc_max_file_path = "{}_QC.max".format(os.path.join(qc_tool_exports_dir, max_file_name))
 
             FileManager.Save(qc_max_file_path, True, True)
 
@@ -1757,39 +1710,40 @@ def process_scene(scn_file_path, wrk_order):
 
             # QC RENDER
             else:
-                qc_renders = qc_render(
-                    [qc_max_file_path],
-                    "Lookdev",
-                    ".PNG",
-                    os.path.dirname(qc_max_file_path))
+                qc_renders = qc_render([qc_max_file_path], "Lookdev", ".PNG", os.path.dirname(qc_max_file_path))
 
         # CHECK-IN
         if DEBUG_SKIP_ASSET_CHECKIN:
             print("\tSkipping Check-in for {}".format(asset_name))
             continue
 
-        description = "Checked-in from 3DS MAX.\n\n" \
-                      "Original File:\n" \
-                      "{}\n\n" \
-                      "Original Node:\n" \
-                      "{}".format(current_file_path, original_node_name)
+        description = (
+            "Checked-in from 3DS MAX.\n"
+            "\n"
+            "Original File:\n"
+            "{}\n"
+            "\n"
+            "Original Node:\n"
+            "{}".format(current_file_path, original_node_name))
 
         ########################################################################
 
         # Check-in asset.
-        file_collection = check_in_asset(asset_file_path, wrk_order,
-                                         asset_name, description,
-                                         matrix=original_t_matrix,
-                                         qc_renders=qc_renders,
-                                         pub_others=pub_others)
+        file_collection = check_in_asset(
+            asset_file_path, 
+            wrk_order,
+            asset_name, 
+            description,
+            matrix=original_t_matrix,
+            qc_renders=qc_renders,
+            pub_others=pub_others)
 
         ########################################################################
 
         # Update asset File Collection with upstream File Collection of
         # original scene.
         if scene_file_collection and file_collection:
-            SG.update("CustomEntity16", file_collection.get("id"),
-                      {"sg_upstream": scene_file_collection})
+            SG.update("CustomEntity16", file_collection.get("id"), {"sg_upstream": scene_file_collection})
 
         if file_collection:
             manifest_assets_file = open(MANIFEST_ASSETS_PATH, "a")
@@ -1812,20 +1766,15 @@ def qc_images_add_hdr():
         temp_dir = tempfile.gettempdir()
         if hdr_name is "DVS_23.hdr":
             hdr_name = "23.hdr"
-        new_hdr = os.path.join(temp_dir, r"__ingest_bulk__\QC\{}".format(
-            hdr_name))
+        new_hdr = os.path.join(temp_dir, r"__ingest_bulk__\QC\{}".format(hdr_name))
         if not os.path.exists(new_hdr):
             new_hdr_dir = os.path.dirname(new_hdr)
             if not os.path.exists(new_hdr_dir):
                 os.makedirs(new_hdr_dir)
             shutil.copy(hdr, new_hdr)
         QC_IMAGES.append(new_hdr)
-    for tex_filename in ["groundOpacity_001.png",
-                         "photo_studio_01_4kDarkened.hdr",
-                         "UV_Coded.jpg"]:
-        QC_IMAGES.append(
-            os.path.join(
-                qc_tool_folder, r"QC-Tool\Textures\{}".format(tex_filename)))
+    for tex_filename in ["groundOpacity_001.png", "photo_studio_01_4kDarkened.hdr", "UV_Coded.jpg"]:
+        QC_IMAGES.append(os.path.join(qc_tool_folder, r"QC-Tool\Textures\{}".format(tex_filename)))
 
 
 qc_images_add_hdr()
@@ -1837,7 +1786,7 @@ def qc_render(files_list, render_mode, render_ext, output_path):
 
     Args:
         files_list (list(str)): List of paths to MAX files to QC render.
-        render_mode (str): Render mode: 'Model' or 'Lookdev'
+        render_mode (str): Render mode: "Model" or "Lookdev"
         render_ext (str): File extension for output QC renders.
         output_path (str): Directory output path for the QC renders.
 
@@ -1874,9 +1823,10 @@ def qc_render(files_list, render_mode, render_ext, output_path):
                 print("Error opening file: {}".format(f_norm))
 
     if os.path.isdir(output_path):
-        qc_renders = [os.path.join(output_path, dir_file)
-                      for dir_file in os.listdir(output_path)
-                      if dir_file.lower().endswith(".png")]
+        qc_renders = [
+            os.path.join(output_path, dir_file) 
+            for dir_file in os.listdir(output_path) 
+            if dir_file.lower().endswith(".png")]
 
     return qc_renders
 
@@ -1893,31 +1843,28 @@ def qc_vrscene_export(max_file_path):
     qc_vrscenes = None
 
     qc_tool = get_qc_tool()
-    if qc_tool:
-        f_norm = os.path.normpath(max_file_path)
-        for render_mode in [u"Model", u"Lookdev"]:
-            print("  Opening file: {}".format(f_norm))
-            if mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
-                qc_tool.init()
-                qc_tool.setVal(u"Render Mode", render_mode)
-                qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
-                qc_tool.setVal(u"Active Camera", 6)  # Cam_Hero
-                if render_mode == u"Lookdev":
-                    qc_tool.overWhiteMode(1)  # sets background to White
+    if not qc_tool:
+        return qc_vrscenes
+    f_norm = os.path.normpath(max_file_path)
+    for render_mode in [u"Model", u"Lookdev"]:
+        print("  Opening file: {}".format(f_norm))
+        if not mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
+            continue
+        qc_tool.init()
+        qc_tool.setVal(u"Render Mode", render_mode)
+        qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
+        qc_tool.setVal(u"Active Camera", 6)  # Cam_Hero
+        if render_mode == u"Lookdev":
+            qc_tool.overWhiteMode(1)  # sets background to White
 
-                cam_node = mxs.getNodeByName("Cam_Hero")
-                mxs.setProperty(cam_node, "clip_on", False)  # Clipping planes
-                mxs.redrawViews()
+        cam_node = mxs.getNodeByName("Cam_Hero")
+        mxs.setProperty(cam_node, "clip_on", False)  # Clipping planes
+        mxs.redrawViews()
 
-                if qc_vrscenes is None:
-                    qc_vrscenes = list()
-                qc_vrscenes.append(
-                    export_vrscene_file("_Cam_Hero_{}".format(render_mode)))
-                mxs.saveMaxFile(
-                    f_norm.replace(
-                        "_QC.max",
-                        "_QC_Cam_Hero_{}.max".format(render_mode)),
-                    quiet=True)
+        if qc_vrscenes is None:
+            qc_vrscenes = []
+        qc_vrscenes.append(export_vrscene_file("_Cam_Hero_{}".format(render_mode)))
+        mxs.saveMaxFile(f_norm.replace("_QC.max", "_QC_Cam_Hero_{}.max".format(render_mode)), quiet=True)
 
     return qc_vrscenes
 
@@ -1932,8 +1879,8 @@ def qc_vrscene_farm_submit(task, file_collection):
     Returns:
         jobs (list[dict]): List of Shotgun FarmJob dictionaries.
     """
-    pub_files = list()
-    jobs = list()
+    pub_files = []
+    jobs = []
 
     file_collection = SG.find_one(
         file_collection.get("type"),
@@ -1941,33 +1888,29 @@ def qc_vrscene_farm_submit(task, file_collection):
         ["sg_published_file_entity_links"])
 
     for pub_file in file_collection.get("sg_published_file_entity_links"):
-        if pub_file.get("name").endswith(".vrscene") and "_QC_" in \
-                pub_file.get("name"):
+        if pub_file.get("name").endswith(".vrscene") and "_QC_" in pub_file.get("name"):
             pub_files.append(pub_file)
 
     for pub_file in pub_files:
         sg_dict = {
+            "code": "{}".format(pub_file.get("name").replace(".vrscene", "_qc_render")),
             "project": SG_ENGINE.context.project,
-            "code": "{}".format(
-                pub_file.get("name").replace(".vrscene", "_qc_render")),
-            "sg_task": task,
             "sg_asset_package_upstream": file_collection,
             "sg_asset_package_downstream": file_collection,
             "sg_deliverable_package": task.get("entity"),
             "sg_frames": "{}".format(Core.GetCurrentTime()),
             "sg_frames_increment": 1,
-            "sg_image_width": 1000,
+            "sg_image_filename": "{}".format(pub_file.get("name").replace(".vrscene", ".jpg")),
             "sg_image_height": 1000,
-            "sg_image_filename": "{}".format(
-                pub_file.get("name").replace(".vrscene", ".jpg")),
+            "sg_image_width": 1000,
             "sg_media_status_override": "ip",
             "sg_noise_threshold": str(0.05),
+            "sg_priority": 30,
             "sg_render_published_file": pub_file,
             "sg_status_list": "que",
-            "sg_priority": 30
+            "sg_task": task,
         }
-        job = SG.create("CustomThreadedEntity02", sg_dict,
-                        return_fields=["code"])
+        job = SG.create("CustomThreadedEntity02", sg_dict, return_fields=["code"])
 
         jobs.append(job)
 
@@ -2007,8 +1950,7 @@ def replace_non_ascii_paths():
     for p in get_non_ascii_nodes(files_dict):
         extension = p.rsplit(".", 1)[1]
         dirpath = mxs.maxFilePath
-        new_name = "{}_renamed_file_{}.{}".format(
-            scene_file_name, count, extension)
+        new_name = "{}_renamed_file_{}.{}".format(scene_file_name, count, extension)
         new_dir = os.path.join(dirpath, "renamed_files")
         new_path = os.path.join(new_dir, new_name)
         if not os.path.exists(new_dir):
@@ -2141,9 +2083,7 @@ if __name__ == "__main__":
 
     INGEST_COMPANY_NAME = "Evermotion"
     # INGEST_COMPANY_NAME = "CG Trader"
-    INGEST_COMPANY_ENTITY = SG.find_one(
-        "CustomNonProjectEntity02",
-        [["code", "is", INGEST_COMPANY_NAME]])
+    INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Silence V-Ray dialog for older versions.
     mxs.setVRaySilentMode()
