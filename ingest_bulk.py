@@ -429,10 +429,10 @@ def clean_string(input_str):
     Returns:
         str: Cleaned string.
     """
-    if not isinstance(input_str, basestring):
+    if not isinstance(input_str, str):
         input_str = str(input_str)
-    if isinstance(input_str, str):
-        input_str = input_str.decode("utf8", errors="ignore")
+    else:
+        input_str = bytes(input_str).decode("utf8", errors="ignore")
 
     nkfd_form = unicodedata.normalize("NFKD", input_str)
     s = u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
@@ -581,7 +581,7 @@ def export_material_json(asset_file_path):
         elif obj_super_class == value_class:
             # result = str(obj_material)
             # unicode as long as there are paths in Shotgun that are non-ascii
-            result = unicode(obj_material)
+            result = str(obj_material)
         elif obj_class == array_parameter_class or obj_class == array_class:
             result = {}
             for i in range(obj_material.count):
@@ -620,7 +620,7 @@ def export_material_json(asset_file_path):
 
     json_path = "{}_mat_network.json".format(asset_file_path.rsplit(".", 1)[0])
     with io.open(json_path, "w", encoding="utf8") as json_file:
-        json_file.write(unicode(json.dumps(json_dict, ensure_ascii=False, indent=4)))
+        json_file.write(str(json.dumps(json_dict, ensure_ascii=False, indent=4)))
 
     return json_path
 
@@ -1338,7 +1338,7 @@ def process_scene(scn_file_path, wrk_order):
                 if not os.path.exists(f):
                     missing_paths.append(f)
                 try:
-                    unicode(f).encode("ascii")
+                    str(f).encode("ascii")
                 except UnicodeEncodeError:
                     non_unicode.append(f)
         if missing_paths:
@@ -1693,7 +1693,7 @@ def replace_non_ascii_paths():
         if fls_dict:
             for f in fls_dict:
                 try:
-                    unicode(f).encode("ascii")
+                    str(f).encode("ascii")
                 except UnicodeEncodeError:
                     non_ascii.append(f)
 
