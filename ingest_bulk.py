@@ -84,7 +84,6 @@ from qc_batch_tool import get_qc_tool
 # Debug globals
 DEBUG_ASSET_EXPORT_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_PRINT = False
-DEBUG_PROCESS_SCENES = False  # True: Process specific MAX files, False: Search.
 DEBUG_SCENE_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_SKIP_ASSET_CHECKIN = False
 DEBUG_SKIP_EXPORT_MAX = False
@@ -116,11 +115,7 @@ MANIFEST_FILE_PATH = None
 MANIFEST_MOST_RECENT = None  # Path to "current" manifest file.
 MAX_FILE_OLDEST = False  # True: Ingest the oldest MAX file; False: newest.
 ORIGIN_POSITION = mxs.Point3(0, 0, 0)
-ORIGIN_TRANSFORM_MATRIX = mxs.Matrix3(
-    mxs.Point3(1, 0, 0),
-    mxs.Point3(0, 1, 0),
-    mxs.Point3(0, 0, 1),
-    mxs.Point3(0, 0, 0))
+ORIGIN_TRANSFORM_MATRIX = mxs.Matrix3(1)
 QC_EXPORT = True  # True: Export vrscenes; False: render QC passes in place.
 # Import these images to render QC vrscenes.
 qc_tool_folder = get_tool_dir("QC-Tool")
@@ -383,6 +378,18 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
     return file_collection
 
 
+def clean_name(name_string):
+    """Remove non-printable characters from filename.
+
+    Args:
+        name_string (str): Name to clean.
+
+    Returns:
+        str: Filename with non-printable characters removed.
+    """
+    return "".join(c for c in name_string if c in string.printable)
+
+
 def clean_scene_materials():
     """Removes any references to unused materials."""
     # reset material editors
@@ -411,18 +418,6 @@ def clean_scene_materials():
 
     # Don't render hidden objects
     mxs.rendHidden = False
-
-
-def clean_name(name_string):
-    """Remove non-printable characters from filename.
-
-    Args:
-        name_string (str): Name to clean.
-
-    Returns:
-        str: Filename with non-printable characters removed.
-    """
-    return "".join(c for c in name_string if c in string.printable)
 
 
 def clean_string(input_str):
@@ -875,6 +870,94 @@ def export_vrscene_file(suffix=""):
     return result
 
 
+def find_duplicate_nodes(nodes):
+    """Returns dictionary of similar nodes.
+
+    Args:
+        nodes (list[pymxs.MXSWrapperBase]): List of nodes within which to find matching groups of nodes.
+
+    Returns:
+        dict: Groups of similar nodes.
+            ::
+            {
+                name (str): [identical nodes (pymxs.MXSWrapperBase)],
+                ...
+            }
+    """
+    def check_geo_and_mat(node1, node2):
+        """Checks to see if 2 given nodes have the same geometry and material.
+
+        Args:
+            node1 (pymxs.MXSWrapperBase): Node to cross-reference.
+            node2 (pymxs.MXSWrapperBase): Node to cross-reference.
+
+        Returns:
+            bool: Do these nodes match?
+        """
+        # If they're both group nodes and they have the have the same number of children...
+        if mxs.classOf(node1) == mxs.Dummy and mxs.classOf(node2) == mxs.Dummy:
+            node1_children = get_all_nodes([node1])
+            node2_children = get_all_nodes([node2])
+            if len(node1_children) != len(node2_children):
+                return False
+
+            # If the total number of faces and vertices between the children are equal...
+            if (sum([mxs.getPolygonCount(n)[0] for n in node1_children])
+                    != sum([mxs.getPolygonCount(n)[0] for n in node2_children])
+                    or sum([mxs.getPolygonCount(n)[1] for n in node1_children])
+                    != sum([mxs.getPolygonCount(n)[1] for n in node2_children])):
+                return False
+
+            if (sorted([child.material.Name for child in node1_children if child.material])
+                    == sorted([child.material.Name for child in node2_children if child.material])):
+                return True
+        else:
+            if (list(mxs.getPolygonCount(node1)) == list(mxs.getPolygonCount(node2)) and node1.material
+                    and node2.material and node1.material == node2.material):
+                return True
+        return False
+
+    ##########
+
+    dup_nodes = {}
+    matches = []
+
+    # For every node to the second to last node..
+    for i in range(len(nodes) - 1):
+        # Only compare a node if it hasn't been matched yet.
+        if nodes[i] in matches:
+            continue
+
+        dup_grp_name = "{}_dups".format(nodes[i].Name)
+
+        # Find nodes with matching geo and textures...
+        # For every node AFTER the node to which you are comparing...
+        for j in range(i + 1, len(nodes)):
+            if nodes[j] in matches:
+                continue
+
+            # Matching nodes have the same number of faces, vertices, and materials...
+            if not check_geo_and_mat(nodes[i], nodes[j]):
+                continue
+
+            if DEBUG_PRINT:
+                print("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
+
+            # If this is the first match for the first node, put it in the
+            # groups dictionary and matches list.
+            if nodes[i] not in matches:
+                dup_nodes[dup_grp_name] = [nodes[i]]
+                matches.append(nodes[i])
+
+            dup_nodes[dup_grp_name].append(nodes[j])
+            matches.append(nodes[j])
+
+    # Left over are individual geo nodes with materials or groups with materials
+    dup_nodes["_UNIQUE_NODES_"] = [node for node in nodes if node not in matches]
+
+    return dup_nodes
+
+
 def get_all_nodes(nodes=None):
     """Returns all descendants of a list of nodes.
     If None is provided, it will return all nodes in the scene.
@@ -1021,8 +1104,8 @@ def get_asset_nodes(nodes_text_file):
         print("Number of Geo Nodes found: {}".format(len(geo_nodes)))
         print("Number of Group Nodes found: {}".format(len(group_nodes)))
 
-    matched_geo_nodes = match_names(geo_nodes)
-    matched_group_nodes = match_names(group_nodes)
+    matched_geo_nodes = find_duplicate_nodes(geo_nodes)
+    matched_group_nodes = find_duplicate_nodes(group_nodes)
 
     matched_nodes = matched_geo_nodes.copy()
 
@@ -1073,23 +1156,6 @@ def get_task(asset_id):
     return task
 
 
-def is_max_file_path_clean(path):
-    """Is the path to the MAX file clean of words to avoid?
-
-    Args:
-        path (str): Path to check.
-
-    Returns:
-        bool: Is the path to the MAX file clean of words to avoid?
-    """
-    elements = []
-    for e in IGNORE_IN_MAX_FILE_NAMES:
-        if e.lower() in path.lower():
-            elements.append(e)
-
-    return not bool(elements)
-
-
 def include_node(node):
     """Does this node qualify to be included in the export?
 
@@ -1122,253 +1188,21 @@ def include_node(node):
     return True
 
 
-def match_names(nodes):
-    """Returns dictionary of similar nodes.
+def is_max_file_path_clean(path):
+    """Is the path to the MAX file clean of words to avoid?
 
     Args:
-        nodes (list[pymxs.MXSWrapperBase]): List of nodes within which to find matching groups of nodes.
+        path (str): Path to check.
 
     Returns:
-        dict: Groups of similar nodes.
-            ::
-            {
-                name (str): [identical nodes (pymxs.MXSWrapperBase)]
-            }
+        bool: Is the path to the MAX file clean of words to avoid?
     """
-    def check_geo(node1, node2):
-        """Checks to see if 2 given nodes have the same geometry and material.
+    elements = []
+    for e in IGNORE_IN_MAX_FILE_NAMES:
+        if e.lower() in path.lower():
+            elements.append(e)
 
-        Args:
-            node1 (pymxs.MXSWrapperBase): Node to cross-reference.
-            node2 (pymxs.MXSWrapperBase): Node to cross-reference.
-
-        Returns:
-            bool: Do these nodes match?
-        """
-        # If they're both group nodes and they have the have the same number of children...
-        if mxs.classOf(node1) == mxs.Dummy and mxs.classOf(node2) == mxs.Dummy:
-            node1_children = get_all_nodes([node1])
-            node2_children = get_all_nodes([node2])
-            if len(node1_children) != len(node2_children):
-                return False
-
-            # If the total number of faces and vertices between the children are equal...
-            if (sum([mxs.getPolygonCount(n)[0] for n in node1_children])
-                    != sum([mxs.getPolygonCount(n)[0] for n in node2_children])
-                    or sum([mxs.getPolygonCount(n)[1] for n in node1_children])
-                    != sum([mxs.getPolygonCount(n)[1] for n in node2_children])):
-                return False
-
-            if (sorted([child.material.Name for child in node1_children if child.material])
-                    == sorted([child.material.Name for child in node2_children if child.material])):
-                return True
-        else:
-            if (list(mxs.getPolygonCount(node1)) == list(mxs.getPolygonCount(node2)) and node1.material
-                    and node2.material and node1.material == node2.material):
-                return True
-        return False
-
-    def compare_node_names(node1, node2):
-        """Compares names of 2 nodes and returns the index of single mismatch.
-        Returns None if there is more than one mismatch.
-
-        Args:
-            node1 (pymxs.MXSWrapperBase): First node with which to compare.
-            node2 (pymxs.MXSWrapperBase): Second node with which to compare.
-
-        Returns:
-            int|None: Index
-        """
-        if node1.Name == node2.Name:
-            return None
-
-        n1_name_list = node1.Name.split("_")
-        n2_name_list = node2.Name.split("_")
-
-        if len(n1_name_list) != len(n2_name_list):
-            return None
-
-        num_of_mismatches = 0
-        idx_of_mismatch = None
-
-        for s in range(len(n1_name_list)):
-            if n1_name_list[s] != n2_name_list[s]:
-                num_of_mismatches += 1
-
-                if num_of_mismatches > 1:
-                    return None
-
-                idx_of_mismatch = s
-
-        # The mismatched portion of the name should only be numeric or alphanumeric. Also, there is an edge case that
-        # node1 mismatch is alpha and node2 is not:
-        # ["AE34", "002", "garden", "lamp"] <==> ["AE34", "002", "garden", "lamp001"]
-        # So test alpha for node2, not node1.
-        if n2_name_list[idx_of_mismatch].isalpha():
-            return None
-
-        return idx_of_mismatch
-
-    def name_list_clean(name_list, indx_of_mismatch):
-        """Cleans name list of mismatches.
-
-        If the mismatch element is a:
-        string: Leave it alone.
-        digit: Remove it.
-        alphanumeric: Remove the numbers, keep the text.
-
-        Examples:
-            index_of_mismatch = 3
-            ["AE34", "002", "garden", "lamp"] => ["AE34", "002", "garden", "lamp"]
-
-            index_of_mismatch = 3
-            ["AE34", "002", "lilly", "01"] => ["AE34", "002", "lilly"]
-
-            index_of_mismatch = 3
-            ["AE34", "002", "garden", "lamp001"] => ["AE34", "002", "garden", "lamp"]
-
-        Args:
-            name_list (list[str]): Original name list
-            indx_of_mismatch (int): Index of the mismatch between node names.
-
-        Returns:
-            list[str]: Cleaned name list.
-        """
-        mismatch_str = name_list[indx_of_mismatch]
-
-        # If the mismatch string is alphanumeric, get rid of the
-        # numbers and put the remaining string back in the name list.
-        if not mismatch_str.isalpha() and not mismatch_str.isdigit():
-            mismatch_str = "".join([s for s in sort_key_alphanum(mismatch_str) if type(s) != int])
-
-            name_list[indx_of_mismatch] = mismatch_str
-
-            return name_list
-
-        # If mismatch string is just a string, leave it alone.
-        if mismatch_str.isalpha():
-            return name_list
-
-        # If mismatch string is a number, like a version number, remove it.
-        if len(name_list) > 1:
-            name_list.pop(indx_of_mismatch)
-
-        return name_list
-
-    ##########
-
-    groups = {}
-    matches = []
-
-    # For every node to the second to last node..
-    for i in range(len(nodes) - 1):
-        # Only compare a node if it hasn't been matched yet.
-        if nodes[i] in matches:
-            continue
-
-        # A name list is the list of strings that comprise the full name
-        # Example:
-        # "AE34_002_lilly_leaf_01" => ["AE34", "002", "lilly", "leaf", "01"]
-        node1_name_list = nodes[i].Name.split("_")
-
-        # Comparing similar name lists of nodes that belong to the same group
-        # should yield exactly one index that is different between the
-        # two lists.
-        # Example:
-        # ["AE34", "002", "lilly", "01"] <==> ["AE34", "002", "lilly", "02"]
-        # Index 3 is different
-        index_of_mismatch = None
-
-        # Find nodes with matching geo and textures...
-        # For every node AFTER the node to which you are comparing...
-        for j in range(i + 1, len(nodes)):
-            if nodes[j] in matches:
-                continue
-            # Matching nodes have the same number of faces, vertices, and materials...
-            if not check_geo(nodes[i], nodes[j]):
-                continue
-
-            index_of_mismatch_compare = compare_node_names(nodes[i], nodes[j])
-
-            # An appropriate mismatch wasn't found.  Move on to the next node.
-            if index_of_mismatch_compare is None:
-                continue
-
-            # If index_of_mismatch is None, then this is the first time a match has been found for the first node.
-            # Compare all following name lists to this index.
-            if index_of_mismatch is None:
-                index_of_mismatch = index_of_mismatch_compare
-                # Get the cleaned version of the name list.
-                node1_name_list = name_list_clean(node1_name_list, index_of_mismatch)
-
-            # We need to avoid the possibility of false positives:
-            # ["AE34", "002", "lilly", "02"] <!=> ["AE34", "002", "weed", "02"]
-            # This mismatch is at index 2.
-            # The previous mismatch for the first node is at index 3.
-            # The indexes of mismatch must be equal if the nodes belong to the same group.
-            if index_of_mismatch_compare != index_of_mismatch:
-                continue
-
-            # Get the cleaned version of the name list.
-            node2_name_list = name_list_clean(nodes[j].Name.split("_"), index_of_mismatch)
-
-            # If two nodes truly belong to a group, if you clean the
-            # mismatching string from their name lists, the remaining name
-            # lists should be identical.
-            #
-            # Example 1:
-            # index_of_mismatch = 3
-            # first node:
-            # ["AE34", "002", "lilly", "01"] => ["AE34", "002", "lilly"]
-            #
-            # second node
-            # ["AE34", "002", "lilly", "02"] => ["AE34", "002", "lilly"]
-            #
-            # comparison:
-            # ["AE34", "002", "lilly"] <==> ["AE34", "002", "lilly"]
-            #
-            # Therefore,
-            # "AE34_002_lilly_01" and "AE34_002_lilly_02" will match.
-            #
-            # Example 2:
-            # index_of_mismatch = 3
-            # first node:
-            # ["AE34", "002", "garden", "lamp"] => ["AE34", "002", "garden", "lamp"]
-            #
-            # second node:
-            # ["AE34", "002", "garden", "lamp001"] => ["AE34", "002", "garden", "lamp"]
-            #
-            # comparison:
-            # ["AE34", "002", "garden", "lamp"] <==> ["AE34", "002", "garden", "lamp"]
-            #
-            # Therefore,
-            # "AE34_002_garden_lamp" and "AE34_002_garden_lamp001"
-            # will match.
-            #
-            # If the mismatches are cleaned and the 2 name lists
-            # are identical, then they belong to the same group.
-            if node1_name_list != node2_name_list:
-                continue
-
-            # Reassemble name to use as a key for all matching nodes
-            matching_str = "_".join(node1_name_list)
-
-            # If this is the first match for the first node, put it in the
-            # groups dictionary and matches list.
-            if nodes[i] not in matches:
-                groups[matching_str] = [nodes[i]]
-                matches.append(nodes[i])
-
-            matches.append(nodes[j])
-            groups[matching_str].append(nodes[j])
-
-            if DEBUG_PRINT:
-                print("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
-
-    # Left over are individual geo nodes with materials or groups with materials
-    groups["_UNIQUE_NODES_"] = [node for node in nodes if node not in matches]
-
-    return groups
+    return not bool(elements)
 
 
 def max_walk(dir_to_search):
@@ -1530,8 +1364,6 @@ def process_scene(scn_file_path, wrk_order):
     clean_scene_materials()
 
     # Refresh bitmaps...
-    # mxs.freescenebitmaps()
-    # mxs.ATSOps.Refresh()
     mxs.redrawViews()
 
     current_file_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
@@ -1917,7 +1749,7 @@ def search_and_process(search_path, wrk_order):
             most_recent_processed_file_path = most_recent_processed_file.read()
         skip = True
 
-    count = 0       # Total count.
+    count = 0  # Total count.
     # If process was interrupted, this is the current count for
     # this round of processing.
     cur_count = 0
@@ -1941,35 +1773,37 @@ def search_and_process(search_path, wrk_order):
 
             files = [f for f in files if is_max_file_path_clean(f)]
 
-        if files:
-            max_file = files[0]
-            print("\n\nScene found: {}".format(max_file))
+        if not files:
+            continue
 
-            ####################################################################
+        max_file = files[0]
+        print("\n\nScene found: {}".format(max_file))
 
-            # Process the MAX file.
-            process_success = process_scene(max_file, wrk_order)
+        ####################################################################
 
-            ####################################################################
+        # Process the MAX file.
+        process_success = process_scene(max_file, wrk_order)
 
-            if process_success:
-                # Write to manifest files.
-                with open(MANIFEST_FILE_PATH, "a") as manifest_file:
-                    manifest_file.write("{}\n".format(max_file))
-                with open(MANIFEST_MOST_RECENT, "w") as most_recent_processed_file:
-                    most_recent_processed_file.write(max_file)
+        ####################################################################
 
-                cur_success_count += 1
-            else:
-                with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
-                    failed_processed_file.write("{}\n".format(max_file))
+        if process_success:
+            # Write to manifest files.
+            with open(MANIFEST_FILE_PATH, "a") as manifest_file:
+                manifest_file.write("{}\n".format(max_file))
+            with open(MANIFEST_MOST_RECENT, "w") as most_recent_processed_file:
+                most_recent_processed_file.write(max_file)
 
-            # Increment count.
-            count += 1
-            cur_count += 1
+            cur_success_count += 1
+        else:
+            with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
+                failed_processed_file.write("{}\n".format(max_file))
 
-            if DEBUG_SCENE_COUNT_LIMIT and cur_count >= DEBUG_SCENE_COUNT_LIMIT:
-                break
+        # Increment count.
+        count += 1
+        cur_count += 1
+
+        if DEBUG_SCENE_COUNT_LIMIT and cur_count >= DEBUG_SCENE_COUNT_LIMIT:
+            break
 
     # os.remove(current_file_path)
     print("{} total MAX scenes.".format(count))
@@ -2024,20 +1858,26 @@ def sort_key_alphanum(s, case_sensitive=False):
 
 
 if __name__ == "__main__":
-    scene_file_paths = [
-        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_001\scenes\AE34_001.max",
-        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2011.max",
-        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_003\003\AE34_003.max",
-        r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max"
-    ]
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
+    # Work order
     work_order = {"type": "CustomEntity17", "id": 2566}  # Asset Library
     # work_order = {"type": "CustomEntity17", "id": 2232}  # Evermotion
     # work_order = {"type": "CustomEntity17", "id": 48}  # CG Trader
 
-    INGEST_COMPANY_NAME = "Evermotion"
+    # Company
+    INGEST_COMPANY_NAME = "Evermotion"  # Must match name in Shotgun
     # INGEST_COMPANY_NAME = "CG Trader"
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
+
+    # Directory to search.
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
+
+    # Specific scenes to process
+    scene_file_paths = [
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_001\scenes\AE34_001.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2011.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_003\003\AE34_003.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max"
+    ]
 
     # Silence V-Ray dialog for older versions.
     mxs.setVRaySilentMode()
@@ -2047,14 +1887,13 @@ if __name__ == "__main__":
     # If a scene is already open, process it.
     if curr_path:
         success = process_scene(curr_path, work_order)
+    # If you have specific scenes to process...
+    elif scene_file_paths:
+        for scene_file_path in scene_file_paths:
+            success = process_scene(scene_file_path, work_order)
+    # Or search a directory and process
     else:
-        # If you have specific scenes to process...
-        if DEBUG_PROCESS_SCENES:
-            for scene_file_path in scene_file_paths:
-                success = process_scene(scene_file_path, work_order)
-        # Or search a directory and process
-        else:
-            search_and_process(SEARCH_PATH, work_order)
+        search_and_process(SEARCH_PATH, work_order)
 
     # Reset scene.
     mxs.resetMaxFile(mxs.Name("noPrompt"))
