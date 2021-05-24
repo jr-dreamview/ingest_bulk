@@ -1,11 +1,10 @@
-########################################################################################################################
+################################################################################
 
 
 __author__ = "John Russell <john.russell@dreamview.com>"
 
 
 # Standard libraries
-from difflib import SequenceMatcher
 import io
 import json
 import logging
@@ -27,8 +26,6 @@ from utils.sg_create_entities import create_asset
 # None
 
 # App-specific libraries
-from MaxPlus import (Atomspherics, Core, Environment, FileManager, Matrix3, Point3, RenderSettings, SelectionManager,
-                     SuperClassIds, ViewportManager)
 from pymxs import runtime as mxs
 
 # Get the script folder from shotgun script dir
@@ -38,7 +35,7 @@ def get_tool_dir(tool_name):
     """Returns directory of tool name.
 
     Args:
-        tool_name (str): Name of tool, with wildcards (*).
+        tool_name (str): Name of tool, with optional wildcards (*).
 
     Returns:
         str|None: Path to tool.
@@ -49,12 +46,15 @@ def get_tool_dir(tool_name):
     except AttributeError:
         dreamview_scripts_scriptspath = None
 
-    if dreamview_scripts_scriptspath is not None:
-        tools_dir = os.path.dirname(dreamview_scripts_scriptspath)
-        if os.path.exists(tools_dir):
-            check_dirs = list(mxs.getDirectories(os.path.join(tools_dir, tool_name)))
-            if check_dirs:
-                result_path = check_dirs[0]
+    if dreamview_scripts_scriptspath is None:
+        return result_path
+    tools_dir = os.path.dirname(dreamview_scripts_scriptspath)
+    if not os.path.exists(tools_dir):
+        return result_path
+    check_dirs = list(mxs.getDirectories(os.path.join(tools_dir, tool_name)))
+    if not check_dirs:
+        return result_path
+    result_path = check_dirs[0]
 
     return result_path
 
@@ -83,6 +83,7 @@ from qc_batch_tool import get_qc_tool
 
 # Debug globals
 DEBUG_ASSET_EXPORT_COUNT_LIMIT = 0  # 0 exports all.
+DEBUG_PRINT = False
 DEBUG_PROCESS_SCENES = False  # True: Process specific MAX files, False: Search.
 DEBUG_SCENE_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_SKIP_ASSET_CHECKIN = False
@@ -93,21 +94,20 @@ DEBUG_SKIP_QC_FARM = False
 DEBUG_SKIP_SCENE_CHECKIN = False
 
 # Globals
-DEFAULT_PERSP_VIEW_MATRIX = Matrix3(
-    Point3(0.707107, 0.353553, -0.612372),
-    Point3(-0.707107, 0.353553, -0.612372),
-    Point3(0, 0.866025, 0.5),
-    Point3(0, 0, -250))
+DEFAULT_PERSP_VIEW_MATRIX = mxs.Matrix3(
+    mxs.Point3(0.707107, 0.353553, -0.612372),
+    mxs.Point3(-0.707107, 0.353553, -0.612372),
+    mxs.Point3(0, 0.866025, 0.5),
+    mxs.Point3(0, 0, -250))
 # Ignore these classes of nodes when finding nodes to ingest.
-EXCLUDE_SUPERCLASS_IDS = [SuperClassIds.Light, SuperClassIds.Camera]
+EXCLUDE_NODE_CLASSES = [mxs.VRayProxy]
 INGEST_COMPANY_ENTITY = None
 INGEST_COMPANY_NAME = None
 # Don't search these directories for MAX files to process.
-IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN", "AI30_001", "downloaded", 
+IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN", "AI30_001", "downloaded",
                "productized"]
 # Don't process MAX files with these words in the filename.
 IGNORE_IN_MAX_FILE_NAMES = ["corona"]
-INTERSECTION_DIST = 250.0
 logging.basicConfig()
 LOGGER = logging.getLogger()
 MANIFEST_ASSETS_PATH = None
@@ -115,12 +115,12 @@ MANIFEST_FAILED_PATH = None
 MANIFEST_FILE_PATH = None
 MANIFEST_MOST_RECENT = None  # Path to "current" manifest file.
 MAX_FILE_OLDEST = False  # True: Ingest the oldest MAX file; False: newest.
-ORIGIN_POSITION = Point3(0, 0, 0)
-ORIGIN_TRANSFORM_MATRIX = Matrix3(
-    Point3(1, 0, 0),
-    Point3(0, 1, 0),
-    Point3(0, 0, 1),
-    Point3(0, 0, 0))
+ORIGIN_POSITION = mxs.Point3(0, 0, 0)
+ORIGIN_TRANSFORM_MATRIX = mxs.Matrix3(
+    mxs.Point3(1, 0, 0),
+    mxs.Point3(0, 1, 0),
+    mxs.Point3(0, 0, 1),
+    mxs.Point3(0, 0, 0))
 QC_EXPORT = True  # True: Export vrscenes; False: render QC passes in place.
 # Import these images to render QC vrscenes.
 qc_tool_folder = get_tool_dir("QC-Tool")
@@ -132,8 +132,7 @@ SEARCH_PATH = None  # Current dir path used to find 3DS MAX files to ingest.
 SESSION_PATH_START_COUNT = mxs.sessionPaths.count(mxs.Name("map"))
 SG_ENGINE = sgtk.platform.current_engine()
 SG = SG_ENGINE.shotgun
-SIMILAR_RATIO = 0.80
-VIEW_PERSP_USER = 7  # Viewport type "Perspective User" enum.
+VIEW_PERSP_USER = mxs.Name("view_persp_user")  # Viewport type "Perspective User" enum.
 
 
 # Classes
@@ -141,51 +140,6 @@ VIEW_PERSP_USER = 7  # Viewport type "Perspective User" enum.
 
 
 # Functions
-
-def alphanum_key(s, case_sensitive=False):
-    """Turn a string into a list of string and number chunks.
-    Using this key for sorting will order alphanumeric strings properly.
-
-    "ab123cd" -> ["ab", 123, "cd"]
-
-    Args:
-        s (str): Given string.
-        case_sensitive (bool): If True, capital letters will go first.
-    Returns:
-        list[int|str]: Mixed list of strings and integers in the order they occurred in the given string.
-    """
-    def try_int(str_chunk, cs_snstv):
-        """Convert string to integer if it's a number.
-        In certain cases, ordering filenames takes case-sensitivity into consideration.
-
-        Windows default sorting behavior:
-        ["abc1", "ABC2", "abc3"]
-
-        Linux, Mac, PySide, & Python default sorting behavior:
-        ["ABC2", "abc1", "abc3"]
-
-        Case-sensitivity is off by default.
-
-        Args:
-            str_chunk (str): Given string chunk.
-            cs_snstv (bool): If True, capital letters will go first.
-
-        Returns:
-            int|str: If the string represents a number, return the number.
-                Otherwise, return the string.
-        """
-        try:
-            return int(str_chunk)
-        except ValueError:
-            if cs_snstv:
-                return str_chunk
-            # Make it lowercase so the ordering is no longer case-sensitive.
-            return str_chunk.lower()
-
-    ##########
-
-    return [try_int(chunk, case_sensitive) for chunk in re.split("([0-9]+)", s)]
-
 
 def check_file_io_gamma():
     """Checks and updates scene's gamma settings.
@@ -205,7 +159,7 @@ def check_file_io_gamma():
     return result
 
 
-def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="", qc_renders=None, pub_others=None, 
+def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="", qc_renders=None, pub_others=None,
                    full_scene=False):
     """Checks-in supplied MAX file as an asset.
 
@@ -244,7 +198,7 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
                 json_mat_path = export_material_json(asset_file_path)
                 print("\tSuccessfully exported material json export.")
                 break
-            except:
+            except Exception:
                 print("\tError occurred during material json export.")
                 try_count += 1
         if json_mat_path is not None:
@@ -265,12 +219,12 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
         deliverable = SG.find_one("CustomEntity24", [["code", "contains", "{}_Hi Ingest Bulk".format(asset_name)]])
 
         # Create Asset
-        asset = create_asset(SG, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name, 
+        asset = create_asset(SG, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name,
                              deliverable_type="Asset Ingest Bulk", deliverable=deliverable)
 
         asset = SG.find_one(
-            "Asset", 
-            [["id", "is", asset.get("id")]], 
+            "Asset",
+            [["id", "is", asset.get("id")]],
             ["code", "sg_company", "sg_published_files",
              "sg_asset_package_links"])
 
@@ -377,7 +331,7 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
 
     ##########
 
-    scene_name = FileManager.GetFileName().rsplit(".", 1)[0]
+    scene_name = mxs.getFilenameFile(mxs.maxFileName)
 
     scene_description = (
         "Checked-in from 3DS MAX.\n"
@@ -393,24 +347,24 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
     if not os.path.isdir(scene_checkin_dir):
         os.makedirs(scene_checkin_dir)
 
-    scene_checkin_path = os.path.join(scene_checkin_dir, FileManager.GetFileName())
+    scene_checkin_path = os.path.join(scene_checkin_dir, mxs.maxFileName)
 
-    FileManager.Save(scene_checkin_path, True, True)
+    mxs.saveMaxFile(scene_checkin_path, clearNeedSaveFlag=True, useNewFile=True, quiet=True)
 
     ############################################################################
 
     # Check-in the scene.
     file_collection = check_in_asset(
-        scene_checkin_path, 
+        scene_checkin_path,
         wrk_order,
-        scene_name, 
+        scene_name,
         scene_description,
         qc_renders=find_pre_rendered_images(os.path.dirname(scn_file_path)),
         full_scene=True)
 
     ############################################################################
 
-    FileManager.Reset(True)
+    mxs.resetMaxFile(mxs.Name("noPrompt"))
 
     if file_collection is None:
         print("Check-in scene failed.")
@@ -425,7 +379,6 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
     print(result)
 
     replace_non_ascii_paths()
-    # mxs.save()
 
     return file_collection
 
@@ -445,14 +398,14 @@ def clean_scene_materials():
 
     mxs.environmentMap = None
     mxs.backgroundColor = mxs.white
-    Environment.SetMapEnabled(False)
+    mxs.useEnvironmentMap = False
 
     # Remove Effects
-    for c in reversed(range(Atomspherics.GetCount())):
-        Atomspherics.Delete(c)
+    for c in reversed(range(1, mxs.numAtmospherics + 1)):
+        mxs.deleteAtmospheric(c)
 
     # Remove Render Elements
-    render_ele_mngr = RenderSettings.GetCurrentRenderElementManager()
+    render_ele_mngr = mxs.maxOps.GetCurRenderElementMgr()
     render_ele_mngr.SetElementsActive(False)
     render_ele_mngr.RemoveAllRenderElements()
 
@@ -562,26 +515,28 @@ def collect_scene_files():
     # collect all scene bitmap files as dict
     files_dict = {}
     for f in get_all_external_files():
-        if f:
-            used_file_name = mxs.mapPaths.getFullFilePath(f)
-            if used_file_name:
-                f = used_file_name
-            files_dict[f] = {}
+        if not f:
+            continue
+        used_file_name = mxs.mapPaths.getFullFilePath(f)
+        if used_file_name:
+            f = used_file_name
+        files_dict[f] = {}
 
     # collect nodes for each file
     all_nodes = get_current_filename_nodes()
     for n in all_nodes:
         node_prop = all_nodes.get(n)
         file_name = mxs.getProperty(n, mxs.name(node_prop))
-        if file_name:
-            used_file_name = mxs.mapPaths.getFullFilePath(file_name)
-            if used_file_name and file_name != used_file_name:
-                file_name = used_file_name
-                mxs.setProperty(n, mxs.name(node_prop), u"{}".format(used_file_name))
-            if file_name not in files_dict:
-                files_dict[file_name] = {}
-            if n not in files_dict.get(file_name):
-                files_dict[file_name][n] = {"path_attrs": [node_prop]}
+        if not file_name:
+            continue
+        used_file_name = mxs.mapPaths.getFullFilePath(file_name)
+        if used_file_name and file_name != used_file_name:
+            file_name = used_file_name
+            mxs.setProperty(n, mxs.name(node_prop), u"{}".format(used_file_name))
+        if file_name not in files_dict:
+            files_dict[file_name] = {}
+        if n not in files_dict.get(file_name):
+            files_dict[file_name][n] = {"path_attrs": [node_prop]}
 
     return files_dict
 
@@ -644,7 +599,7 @@ def export_material_json(asset_file_path):
             result = {}
             try:
                 obj_properties = get_prop_names(obj_material)
-            except:
+            except Exception:
                 obj_properties = []
             if hasattr(obj_material, "name"):
                 result["name"] = str(obj_material.name)
@@ -681,7 +636,7 @@ def export_node(node, name, nodes_hide_state, export_dir):
     save to another max file, move the node back to its previous position.
 
     Args:
-        node (MaxPlus.INode): Node to save into new file.
+        node (pymxs.MXSWrapperBase): Node to save into new file.
         name (str): Name of the max file to which the node is going.
         nodes_hide_state (dict[str, bool]): Dictionary of hide states for
             all nodes.
@@ -706,22 +661,22 @@ def export_node(node, name, nodes_hide_state, export_dir):
             for s in matrix_str.split("), ")]
 
         Args:
-            nd (MaxPlus.INode): Node of asset.
+            nd (pymxs.MXSWrapperBase): Node of asset.
 
         Returns:
             str: String representation of 4x3 transform matrix.
         """
-        tm = nd.GetObjectTM()
+        tm = nd.objecttransform
         point_string_list = []
 
-        for row in range(tm.GetNumRows()):
-            point = tm.GetRow(row)
+        for row in range(4):
+            point = tm[row]
 
-            x = point.GetX()
+            x = point.x
             x = int(x) if int(x) == x else x
-            y = point.GetY()
+            y = point.y
             y = int(y) if int(y) == y else y
-            z = point.GetZ()
+            z = point.z
             z = int(z) if int(z) == z else z
 
             point_string_list.append("({}, {}, {})".format(x, y, z))
@@ -733,32 +688,32 @@ def export_node(node, name, nodes_hide_state, export_dir):
     node_export_data = {"max": "", "original_node": node.Name, "original_t_matrix": get_transform_matrix(node)}
 
     for n in get_all_nodes([node]):
-        n.Hide = nodes_hide_state.get(n.Name)
+        n.isNodeHidden = nodes_hide_state.get(n.Name)
 
     node_pos = node.Position
     node.Position = ORIGIN_POSITION
 
-    # Move the lowest part of the object to the 0 position
-    node_mxs = mxs.getNodeByName(node.Name)
-
     # rotate
     # TODO: rotation code goes here.
-    mxs.setProperty(node_mxs, "rotation.z_rotation", 0.0)
+    z_rotation = mxs.getProperty(node, "rotation.z_rotation")
+    mxs.setProperty(node, "rotation.z_rotation", 0.0)
 
     # Move z so lowest point is at the ground plane.
-    lowest_point = node_mxs.min[2]
-    mxs.setProperty(node_mxs, "position.z", -lowest_point)
+    lowest_point = node.min[2]
+    mxs.setProperty(node, "position.z", -lowest_point)
 
-    SelectionManager.ClearNodeSelection(True)
-    node.Select()
-    ViewportManager.ViewportZoomExtents(True)
-    SelectionManager.ClearNodeSelection(True)
-    ViewportManager.RedrawViewportsNow(Core.GetCurrentTime())
+    mxs.clearSelection()
+    node.isSelected = True
+    mxs.execute("max zoomext sel")  # Zoom to selected object.
+    mxs.clearSelection()
+    mxs.redrawViews()
 
-    print("{}:".format(name))
+    if DEBUG_PRINT:
+        print("{}:".format(name))
 
     if DEBUG_SKIP_EXPORT_MAX:
-        print("\tSkipping exporting MAX file for {}".format(name))
+        if DEBUG_PRINT:
+            print("\tSkipping exporting MAX file for {}".format(name))
     else:
         save_dir = os.path.join(export_dir, "assets")
 
@@ -767,16 +722,20 @@ def export_node(node, name, nodes_hide_state, export_dir):
             os.makedirs(save_dir)
         save_path = os.path.join(save_dir, "{}.max".format(name))
 
-        node.Select()
-        FileManager.SaveNodes(SelectionManager.GetNodes(), save_path)
-        print("\tExporting MAX file: {}".format(save_path))
+        node.isSelected = True
+        mxs.saveNodes(list(mxs.selection), save_path, quiet=True)
+        if DEBUG_PRINT:
+            print("\tExporting MAX file: {}".format(save_path))
         node_export_data["max"] = save_path
-        SelectionManager.ClearNodeSelection(True)
+        mxs.clearSelection()
+
+    # Reset rotation
+    mxs.setProperty(node, "rotation.z_rotation", z_rotation)
 
     # Reset position
     node.Position = node_pos
     for n in get_all_nodes([node]):
-        n.Hide = True
+        n.isNodeHidden = True
 
     return node_export_data
 
@@ -785,7 +744,7 @@ def export_nodes(groups_to_export, export_dir):
     """Exports all nodes from a dictionary.
 
     Args:
-        groups_to_export (dict[str, list[MaxPlus.INode]]): Dictionary of matched
+        groups_to_export (dict[str, list[pymxs.MXSWrapperBase]]): Dictionary of matched
             nodes lists.
         export_dir (str): Directory to which to export asset MAX files.
 
@@ -797,43 +756,30 @@ def export_nodes(groups_to_export, export_dir):
     nodes_data_dict = {}
     nodes_hide_state = {}
 
-    # Save viewport settings
-    av = ViewportManager.GetActiveViewport()
-    av_type = Core.EvalMAXScript("viewport.GetType()").Get()
-    maxed = ViewportManager.IsViewportMaxed()
-    shading = Core.EvalMAXScript("viewport.GetRenderLevel()").Get()
-    avm = None
-    layout = None
-    zoom = None
-    user_persp = av.GetViewType() == VIEW_PERSP_USER
+    # Current viewport settings
+    view_active = mxs.viewport.activeViewport
+    view_layout = mxs.viewport.getLayout()
+    mxs.viewport.activeViewportEx(1)
+    view_type = mxs.viewport.getType()
+    view_shading = mxs.viewport.getRenderLevel()
+    view_edge_faces = mxs.viewport.GetShowEdgeFaces()
+    view_tm = None
+    if view_type == VIEW_PERSP_USER:
+        view_tm = mxs.getViewTM()
 
     # Set new viewport settings
-    if not maxed:
-        layout = ViewportManager.GetViewportLayout()
-        ViewportManager.SetViewportMax(True)
-    if not user_persp:
-        # Even though it's not a user persp view, it could still be a camera
-        # persp view.
-        if not av.IsPerspView():
-            # If it's not a persp view, it's a 2D view.
-            zoom = av.GetZoom()
-        # Force it to be a user persp view
-        av.SetViewUser(True)
-        ViewportManager.RedrawViewportsNow(Core.GetCurrentTime())
-    else:
-        avm = av.GetViewMatrix()
-    av.SetViewMatrix(DEFAULT_PERSP_VIEW_MATRIX)
-    # Force Default Shading
-    Core.EvalMAXScript("viewport.SetRenderLevel #smoothhighlights")
-    avef = av.GetEdgedFaces()
-    if avef:
-        av.SetEdgedFaces(False)
+    mxs.viewport.setLayout(mxs.Name("layout_1"))
+    mxs.viewport.setType(mxs.Name("view_persp_user"))
+    mxs.viewport.SetRenderLevel(mxs.Name("smoothhighlights"))
+    mxs.viewport.SetShowEdgeFaces(False)
+    mxs.viewport.setTM(DEFAULT_PERSP_VIEW_MATRIX)
+    mxs.redrawViews()
 
     # Remember all nodes hide state, then hide all nodes to make
     # thumbnail clean.
     for node in get_all_nodes():
-        nodes_hide_state[node.Name] = node.Hide
-        node.Hide = True
+        nodes_hide_state[node.Name] = node.isNodeHidden
+        node.isNodeHidden = True
 
     # Make a list of (node, name) tuples.
     # For every node group, save one node to its own MAX file.
@@ -843,7 +789,7 @@ def export_nodes(groups_to_export, export_dir):
     # Add the left over nodes.
     nodes.extend([(node, clean_name(node.Name)) for node in groups_to_export.get("_UNIQUE_NODES_")])
     # sort by node name
-    nodes.sort(key=lambda x: alphanum_key(x[1].lower()))
+    nodes.sort(key=lambda x: sort_key_alphanum(x[1], True))
 
     # Export
 
@@ -874,23 +820,22 @@ def export_nodes(groups_to_export, export_dir):
 
     ############################################################################
 
-    SelectionManager.ClearNodeSelection(True)
+    mxs.clearSelection()
     # Set all nodes previous visible state.
     for node in get_all_nodes():
-        node.Hide = nodes_hide_state.get(node.Name)
+        node.isNodeHidden = nodes_hide_state.get(node.Name)
 
     # Reset viewport to original position.
-    if avef:
-        av.SetEdgedFaces(avef)
-    Core.EvalMAXScript("viewport.SetRenderLevel #{}".format(shading))
-    if user_persp:
-        av.SetViewMatrix(avm)
-    else:
-        Core.EvalMAXScript("viewport.setType #{}".format(av_type))
-        if not av.IsPerspView():
-            av.Zoom(zoom)
-    if not maxed:
-        ViewportManager.SetViewportLayout(layout)
+    if view_tm:
+        mxs.viewport.setTM(view_tm)
+    if view_edge_faces:
+        mxs.viewport.SetShowEdgeFaces(view_edge_faces)
+    mxs.viewport.SetRenderLevel(view_shading)
+    mxs.viewport.setType(view_type)
+    mxs.viewport.setLayout(view_layout)
+    mxs.viewport.activeViewportEx(view_active)
+
+    mxs.redrawViews()
 
     print("\n{} nodes exported.".format(num_nodes))
 
@@ -935,20 +880,20 @@ def get_all_nodes(nodes=None):
     If None is provided, it will return all nodes in the scene.
 
     Args:
-        nodes (list[MaxPlus.INode]|None): Nodes from which to find descendants.
+        nodes (list[pymxs.MXSWrapperBase]|None): Nodes from which to find descendants.
 
     Returns:
-        list[MaxPlus.INode]: List of all nodes.
+        list[pymxs.MXSWrapperBase]: List of all nodes.
     """
     all_nodes_list = []
     if nodes is None:
-        nodes = Core.GetRootNode().Children
+        nodes = list(mxs.rootScene[mxs.name("world")].object.children)
     for node in nodes:
-        if node.GetNumChildren():
-            all_nodes_list.extend(get_all_nodes(node.Children))
+        if node.children.count:
+            all_nodes_list.extend(get_all_nodes(list(node.children)))
         all_nodes_list.append(node)
 
-    return sorted(all_nodes_list, key=lambda n: alphanum_key(n.Name))
+    return sorted(all_nodes_list, key=lambda n: sort_key_alphanum(n.Name))
 
 
 def get_asset_metadata():
@@ -1036,40 +981,48 @@ def get_asset_metadata():
     poly_count, vert_count = get_total_poly_and_vert_count(top_nodes[0])
 
     scene_meta = {
-        "bbox_units": bbox.get("units"), 
-        "bbox_depth": bbox.get("depth"), 
+        "bbox_units": bbox.get("units"),
+        "bbox_depth": bbox.get("depth"),
         "bbox_height": bbox.get("height"),
-        "bbox_width": bbox.get("width"), 
+        "bbox_width": bbox.get("width"),
         "mtl_bitmap_count": mtl_bitmap_count,
-        "mtl_material_count": mtl_material_count, 
+        "mtl_material_count": mtl_material_count,
         "mtl_roughness_count": mtl_roughness_count,
-        "mtl_uv_tiles_count": mtl_uv_tiles_count, 
-        "poly_count": poly_count, 
+        "mtl_uv_tiles_count": mtl_uv_tiles_count,
+        "poly_count": poly_count,
         "vert_count": vert_count}
 
     return scene_meta
 
 
-def get_asset_nodes():
+def get_asset_nodes(nodes_text_file):
     """Get all nodes that represent assets to be ingested.
-    If multiple nodes have the same geometry and textures, only the first node
-    found will be returned.
+    If multiple nodes have the same geometry and textures, only the first node found will be returned.
+
+    Args:
+       nodes_text_file (str): Path to text file to which to write all node names.
 
     Returns:
-       dict[str, list[MaxPlus.INode]]: Nodes that represent assets to ingest.
+       dict[str, list[pymxs.MXSWrapperBase]]: Nodes that represent assets to ingest.
     """
     top_level_nodes = sorted(
-        [c for c in Core.GetRootNode().Children if include_node(c)],
-        key=lambda x: alphanum_key(x.Name))
+        [c for c in list(mxs.rootScene[mxs.name("world")].object.children) if include_node(c)],
+        key=lambda x: sort_key_alphanum(x.Name))
 
-    geo_nodes = [node for node in top_level_nodes
-                 if not node.Object.SuperClassID == SuperClassIds.Helper]
-    group_nodes = [
-        node for node in top_level_nodes
-        if node.Object.SuperClassID == SuperClassIds.Helper and node.GetNumChildren()]
+    geo_nodes = []
+    group_nodes = []
+    for node in top_level_nodes:
+        if mxs.classOf(node) == mxs.Dummy:
+            group_nodes.append(node)
+        else:
+            geo_nodes.append(node)
 
-    matched_geo_nodes, ints1 = match_names(geo_nodes)
-    matched_group_nodes, ints2 = match_names(group_nodes)
+    if DEBUG_PRINT:
+        print("Number of Geo Nodes found: {}".format(len(geo_nodes)))
+        print("Number of Group Nodes found: {}".format(len(group_nodes)))
+
+    matched_geo_nodes = match_names(geo_nodes)
+    matched_group_nodes = match_names(group_nodes)
 
     matched_nodes = matched_geo_nodes.copy()
 
@@ -1081,28 +1034,18 @@ def get_asset_nodes():
             matched_nodes[grp_name] = matched_group_nodes.get(grp_name)
 
     # Print the full list of organized nodes.
-    print("==========\n")
-    print("Matched nodes:\n")
+    nodes_text_file_dir = os.path.dirname(nodes_text_file)
+    if not os.path.exists(nodes_text_file_dir):
+        os.makedirs(nodes_text_file_dir)
 
-    for grp_name in sorted(matched_nodes.keys(), key=lambda x: alphanum_key(x)):
-        print(grp_name)
-        for node in sorted(matched_nodes.get(grp_name), key=lambda x: alphanum_key(x.Name)):
-            print("\t{}".format(node.Name))
+    with open(nodes_text_file, "w") as nodes_file:
+        # Print the full list of organized nodes.
+        nodes_file.write("Matched nodes:\n")
 
-    print("==========\n")
-    # print("Intersecting nodes:\n")
-    #
-    # intersect_dict = {}
-    # intersect_dict.update(ints1)
-    # intersect_dict.update(ints2)
-    #
-    # for node_name in \
-    #         sorted(intersect_dict.keys(), key=lambda x: alphanum_key(x)):
-    #     print("{}:".format(node_name))
-    #     for n in intersect_dict[node_name]:
-    #         print("\t{}".format(n.Name))
-    #
-    # print("==========\n")
+        for grp_name in sorted(matched_nodes.keys(), key=lambda x: sort_key_alphanum(x)):
+            nodes_file.write("{}\n".format(grp_name))
+            for node in sorted(matched_nodes.get(grp_name), key=lambda x: sort_key_alphanum(x.Name)):
+                nodes_file.write("\t{}\n".format(node.Name))
 
     return matched_nodes
 
@@ -1151,22 +1094,24 @@ def include_node(node):
     """Does this node qualify to be included in the export?
 
     Args:
-        node (MaxPlus.INode): 3DS MAX node.
+        node (pymxs.MXSWrapperBase): 3DS MAX node.
 
     Returns:
         bool: Does this node qualify to be included in the export?
     """
-    if node.Object.SuperClassID in EXCLUDE_SUPERCLASS_IDS:
+    if not (node in mxs.geometry or mxs.classOf(node) == mxs.Dummy):
         return False
-    if node.Object.SuperClassID == SuperClassIds.Helper and not node.GetNumChildren:
+    if mxs.classOf(node) in EXCLUDE_NODE_CLASSES:
         return False
-    if node.Object.SuperClassID == SuperClassIds.GeomObject and node.VertexCount == 0:
+    if mxs.classOf(node) == mxs.Dummy and not node.children.count:
         return False
-    if node.GetMaterial() is None:
+    if node in mxs.geometry and list(mxs.getPolygonCount(node))[1] == 0:
         return False
-    if node.Visibility is False:
+    if node in mxs.geometry and node.material is None:
         return False
-    if node.Hide is True:
+    if node.visibility is False:
+        return False
+    if node.isNodeHidden is True:
         return False
     if ".Target" in node.Name:
         return False
@@ -1181,41 +1126,45 @@ def match_names(nodes):
     """Returns dictionary of similar nodes.
 
     Args:
-        nodes (list[MaxPlus.INode]): List of nodes within which to find matching
-            groups of nodes.
+        nodes (list[pymxs.MXSWrapperBase]): List of nodes within which to find matching groups of nodes.
 
     Returns:
-        dict[str:list[MaxPlus.INode]]: Groups of similar nodes.
+        dict: Groups of similar nodes.
+            ::
+            {
+                name (str): [identical nodes (pymxs.MXSWrapperBase)]
+            }
     """
     def check_geo(node1, node2):
         """Checks to see if 2 given nodes have the same geometry and material.
 
         Args:
-            node1 (MaxPlus.INode): Node to cross-reference.
-            node2 (MaxPlus.INode): Node to cross-reference.
+            node1 (pymxs.MXSWrapperBase): Node to cross-reference.
+            node2 (pymxs.MXSWrapperBase): Node to cross-reference.
 
         Returns:
-            Bool: Do these nodes match?
+            bool: Do these nodes match?
         """
-        # If they're both group nodes and they have the have the same number
-        # of children...
-        if node1.Object.SuperClassID == SuperClassIds.Helper and node2.Object.SuperClassID == SuperClassIds.Helper:
+        # If they're both group nodes and they have the have the same number of children...
+        if mxs.classOf(node1) == mxs.Dummy and mxs.classOf(node2) == mxs.Dummy:
             node1_children = get_all_nodes([node1])
             node2_children = get_all_nodes([node2])
             if len(node1_children) != len(node2_children):
                 return False
 
-            # If the total number of vertices between the children
-            # are equal...
-            if sum([n.VertexCount for n in node1_children]) != sum([n.VertexCount for n in node2_children]):
+            # If the total number of faces and vertices between the children are equal...
+            if (sum([mxs.getPolygonCount(n)[0] for n in node1_children])
+                    != sum([mxs.getPolygonCount(n)[0] for n in node2_children])
+                    or sum([mxs.getPolygonCount(n)[1] for n in node1_children])
+                    != sum([mxs.getPolygonCount(n)[1] for n in node2_children])):
                 return False
 
-            if (sorted([child.GetMaterial().GetName() for child in node1_children if child.GetMaterial()]) 
-                    == sorted([child.GetMaterial().GetName() for child in node2_children if child.GetMaterial()])):
+            if (sorted([child.material.Name for child in node1_children if child.material])
+                    == sorted([child.material.Name for child in node2_children if child.material])):
                 return True
         else:
-            if (node1.VertexCount == node2.VertexCount and node1.GetMaterial() 
-                    and node2.GetMaterial() and node1.GetMaterial().GetName() == node2.GetMaterial().GetName()):
+            if (list(mxs.getPolygonCount(node1)) == list(mxs.getPolygonCount(node2)) and node1.material
+                    and node2.material and node1.material == node2.material):
                 return True
         return False
 
@@ -1224,8 +1173,8 @@ def match_names(nodes):
         Returns None if there is more than one mismatch.
 
         Args:
-            node1 (MaxPlus.INode): First node with which to compare.
-            node2 (MaxPlus.INode): Second node with which to compare.
+            node1 (pymxs.MXSWrapperBase): First node with which to compare.
+            node2 (pymxs.MXSWrapperBase): Second node with which to compare.
 
         Returns:
             int|None: Index
@@ -1251,12 +1200,10 @@ def match_names(nodes):
 
                 idx_of_mismatch = s
 
-        # The mismatched portion of the name should only be numeric or
-        # alphanumeric. Also, there is an edge case that node1 mismatch is alpha
-        # and node2 is not:
-        # ["AE34", "002", "garden", "lamp"] <==>
-        # ["AE34", "002", "garden", "lamp001"]
-        # So test alpha for node2, not node1
+        # The mismatched portion of the name should only be numeric or alphanumeric. Also, there is an edge case that
+        # node1 mismatch is alpha and node2 is not:
+        # ["AE34", "002", "garden", "lamp"] <==> ["AE34", "002", "garden", "lamp001"]
+        # So test alpha for node2, not node1.
         if n2_name_list[idx_of_mismatch].isalpha():
             return None
 
@@ -1272,15 +1219,13 @@ def match_names(nodes):
 
         Examples:
             index_of_mismatch = 3
-            ["AE34", "002", "garden", "lamp"] =>
-                ["AE34", "002", "garden", "lamp"]
+            ["AE34", "002", "garden", "lamp"] => ["AE34", "002", "garden", "lamp"]
 
             index_of_mismatch = 3
             ["AE34", "002", "lilly", "01"] => ["AE34", "002", "lilly"]
 
             index_of_mismatch = 3
-            ["AE34", "002", "garden", "lamp001"] =>
-            ["AE34", "002", "garden", "lamp"]
+            ["AE34", "002", "garden", "lamp001"] => ["AE34", "002", "garden", "lamp"]
 
         Args:
             name_list (list[str]): Original name list
@@ -1294,7 +1239,7 @@ def match_names(nodes):
         # If the mismatch string is alphanumeric, get rid of the
         # numbers and put the remaining string back in the name list.
         if not mismatch_str.isalpha() and not mismatch_str.isdigit():
-            mismatch_str = "".join([s for s in alphanum_key(mismatch_str) if type(s) != int])
+            mismatch_str = "".join([s for s in sort_key_alphanum(mismatch_str) if type(s) != int])
 
             name_list[indx_of_mismatch] = mismatch_str
 
@@ -1314,15 +1259,12 @@ def match_names(nodes):
 
     groups = {}
     matches = []
-    intersections = {}
-    skip_match = False
 
     # For every node to the second to last node..
     for i in range(len(nodes) - 1):
         # Only compare a node if it hasn't been matched yet.
         if nodes[i] in matches:
-            skip_match = True
-            # continue
+            continue
 
         # A name list is the list of strings that comprise the full name
         # Example:
@@ -1333,115 +1275,100 @@ def match_names(nodes):
         # should yield exactly one index that is different between the
         # two lists.
         # Example:
-        # ["AE34", "002", "lilly", "01"] <==>
-        # ["AE34", "002", "lilly", "02"]
+        # ["AE34", "002", "lilly", "01"] <==> ["AE34", "002", "lilly", "02"]
         # Index 3 is different
         index_of_mismatch = None
 
+        # Find nodes with matching geo and textures...
         # For every node AFTER the node to which you are comparing...
         for j in range(i + 1, len(nodes)):
-            # Find nodes with matching geo and textures...
-            if not skip_match:
-                # Matching nodes have the same number of vertices
-                # and materials...
-                if not check_geo(nodes[i], nodes[j]):
-                    continue
+            if nodes[j] in matches:
+                continue
+            # Matching nodes have the same number of faces, vertices, and materials...
+            if not check_geo(nodes[i], nodes[j]):
+                continue
 
-                index_of_mismatch_compare = compare_node_names(nodes[i], nodes[j])
+            index_of_mismatch_compare = compare_node_names(nodes[i], nodes[j])
 
-                # An appropriate mismatch wasn't found.  Move on to the
-                # next node.
-                if index_of_mismatch_compare is None:
-                    continue
+            # An appropriate mismatch wasn't found.  Move on to the next node.
+            if index_of_mismatch_compare is None:
+                continue
 
-                # If index_of_mismatch is None, then this is the first time a
-                # match has been found for the first node.  Compare all
-                # following name lists to this index.
-                if index_of_mismatch is None:
-                    index_of_mismatch = index_of_mismatch_compare
-                    # Get the cleaned version of the name list.
-                    node1_name_list = name_list_clean(node1_name_list, index_of_mismatch)
-
-                # We need to avoid the possibility of false positives:
-                # ["AE34", "002", "lilly", "02"] <!=>
-                # ["AE34", "002", "weed", "02"]
-                # This mismatch is at index 2.
-                # The previous mismatch for the first node is at index 3.
-                # The indexes of mismatch must be equal if the nodes belong to
-                # the same group.
-                if index_of_mismatch_compare != index_of_mismatch:
-                    continue
-
+            # If index_of_mismatch is None, then this is the first time a match has been found for the first node.
+            # Compare all following name lists to this index.
+            if index_of_mismatch is None:
+                index_of_mismatch = index_of_mismatch_compare
                 # Get the cleaned version of the name list.
-                node2_name_list = name_list_clean(nodes[j].Name.split("_"), index_of_mismatch)
+                node1_name_list = name_list_clean(node1_name_list, index_of_mismatch)
 
-                # If two nodes truly belong to a group, if you clean the
-                # mismatching string from their name lists, the remaining name
-                # lists should be identical.
-                #
-                # Example 1:
-                # index_of_mismatch = 3
-                # first node:
-                # ["AE34", "002", "lilly", "01"] => ["AE34", "002", "lilly"]
-                #
-                # second node
-                # ["AE34", "002", "lilly", "02"] => ["AE34", "002", "lilly"]
-                #
-                # comparison:
-                # ["AE34", "002", "lilly"] <==> ["AE34", "002", "lilly"]
-                #
-                # Therefore,
-                # "AE34_002_lilly_01" and "AE34_002_lilly_02" will match.
-                #
-                # Example 2:
-                # index_of_mismatch = 3
-                # first node:
-                # ["AE34", "002", "garden", "lamp"] =>
-                # ["AE34", "002", "garden", "lamp"]
-                #
-                # second node:
-                # ["AE34", "002", "garden", "lamp001"] =>
-                # ["AE34", "002", "garden", "lamp"]
-                #
-                # comparison:
-                # ["AE34", "002", "garden", "lamp"] <==>
-                # ["AE34", "002", "garden", "lamp"]
-                #
-                # Therefore,
-                # "AE34_002_garden_lamp" and "AE34_002_garden_lamp001"
-                # will match.
-                #
-                # If the mismatches are cleaned and the 2 name lists
-                # are identical, then they belong to the same group.
-                if node1_name_list != node2_name_list:
-                    continue
+            # We need to avoid the possibility of false positives:
+            # ["AE34", "002", "lilly", "02"] <!=> ["AE34", "002", "weed", "02"]
+            # This mismatch is at index 2.
+            # The previous mismatch for the first node is at index 3.
+            # The indexes of mismatch must be equal if the nodes belong to the same group.
+            if index_of_mismatch_compare != index_of_mismatch:
+                continue
 
-                # Reassemble name to use as a key for all matching nodes
-                matching_str = "_".join(node1_name_list)
+            # Get the cleaned version of the name list.
+            node2_name_list = name_list_clean(nodes[j].Name.split("_"), index_of_mismatch)
 
-                # If this is the first match for the first node, put it in the
-                # groups dictionary and matches list.
-                if nodes[i] not in matches:
-                    groups[matching_str] = [nodes[i]]
-                    matches.append(nodes[i])
+            # If two nodes truly belong to a group, if you clean the
+            # mismatching string from their name lists, the remaining name
+            # lists should be identical.
+            #
+            # Example 1:
+            # index_of_mismatch = 3
+            # first node:
+            # ["AE34", "002", "lilly", "01"] => ["AE34", "002", "lilly"]
+            #
+            # second node
+            # ["AE34", "002", "lilly", "02"] => ["AE34", "002", "lilly"]
+            #
+            # comparison:
+            # ["AE34", "002", "lilly"] <==> ["AE34", "002", "lilly"]
+            #
+            # Therefore,
+            # "AE34_002_lilly_01" and "AE34_002_lilly_02" will match.
+            #
+            # Example 2:
+            # index_of_mismatch = 3
+            # first node:
+            # ["AE34", "002", "garden", "lamp"] => ["AE34", "002", "garden", "lamp"]
+            #
+            # second node:
+            # ["AE34", "002", "garden", "lamp001"] => ["AE34", "002", "garden", "lamp"]
+            #
+            # comparison:
+            # ["AE34", "002", "garden", "lamp"] <==> ["AE34", "002", "garden", "lamp"]
+            #
+            # Therefore,
+            # "AE34_002_garden_lamp" and "AE34_002_garden_lamp001"
+            # will match.
+            #
+            # If the mismatches are cleaned and the 2 name lists
+            # are identical, then they belong to the same group.
+            if node1_name_list != node2_name_list:
+                continue
 
-                matches.append(nodes[j])
-                groups[matching_str].append(nodes[j])
+            # Reassemble name to use as a key for all matching nodes
+            matching_str = "_".join(node1_name_list)
 
+            # If this is the first match for the first node, put it in the
+            # groups dictionary and matches list.
+            if nodes[i] not in matches:
+                groups[matching_str] = [nodes[i]]
+                matches.append(nodes[i])
+
+            matches.append(nodes[j])
+            groups[matching_str].append(nodes[j])
+
+            if DEBUG_PRINT:
                 print("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
-
-            # # Find nodes that belong together in a group...
-            # if intersect_check(nodes[i], nodes[j]):
-            #     if nodes[i].Name not in intersections:
-            #         intersections[nodes[i].Name] = [nodes[i]]
-            #     intersections[nodes[i].Name].append(nodes[j])
-
-        skip_match = False
 
     # Left over are individual geo nodes with materials or groups with materials
     groups["_UNIQUE_NODES_"] = [node for node in nodes if node not in matches]
 
-    return groups, intersections
+    return groups
 
 
 def max_walk(dir_to_search):
@@ -1547,10 +1474,8 @@ def process_scene(scn_file_path, wrk_order):
         """Removes any session paths that were added during processing."""
         session_paths_count = mxs.sessionPaths.count(mxs.Name("map"))
         if session_paths_count > SESSION_PATH_START_COUNT:
-            for i in reversed(range(SESSION_PATH_START_COUNT + 1,
-                                    session_paths_count + 1)):
-                print("Removing path {}".format(
-                    mxs.sessionPaths.get(mxs.Name("map"), i)))
+            for i in reversed(range(SESSION_PATH_START_COUNT + 1, session_paths_count + 1)):
+                print("Removing path {}".format(mxs.sessionPaths.get(mxs.Name("map"), i)))
                 mxs.sessionPaths.delete(mxs.Name("map"), i)
 
     def test_files_names(file_collections):
@@ -1568,7 +1493,7 @@ def process_scene(scn_file_path, wrk_order):
                 }
 
         Returns:
-
+            list[str]: Path that are missing.
         """
         missing_paths = []
         non_unicode = []
@@ -1583,9 +1508,7 @@ def process_scene(scn_file_path, wrk_order):
                 except UnicodeEncodeError:
                     non_unicode.append(f)
         if missing_paths:
-            msg = "Missing the following paths:\n{}".format(
-                "\n".join(missing_paths))
-            print(msg)
+            print("Missing the following paths:\n{}".format("\n".join(missing_paths)))
 
         return missing_paths
 
@@ -1596,7 +1519,7 @@ def process_scene(scn_file_path, wrk_order):
     # Open the scene file in Quiet mode.
     mxs.loadMaxFile(scn_file_path, useFileUnits=True, quiet=True)
 
-    scene_name = FileManager.GetFileName().rsplit(".", 1)[0]
+    scene_name = mxs.getFilenameFile(mxs.maxFileName)
 
     scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
 
@@ -1609,9 +1532,9 @@ def process_scene(scn_file_path, wrk_order):
     # Refresh bitmaps...
     # mxs.freescenebitmaps()
     # mxs.ATSOps.Refresh()
-    ViewportManager.RedrawViewportsNow(Core.GetCurrentTime())
+    mxs.redrawViews()
 
-    current_file_path = FileManager.GetFileNameAndPath()
+    current_file_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
 
     # Add missing file paths to Session Paths for textures, vrmeshes, etc.
     missing_files = add_session_paths(current_file_path)
@@ -1629,7 +1552,7 @@ def process_scene(scn_file_path, wrk_order):
             print("The scene {} is missing files.  Skipping scene.".format(os.path.basename(scn_file_path)))
 
             # Reset scene
-            FileManager.Reset(True)
+            mxs.resetMaxFile(mxs.Name("noPrompt"))
 
             # Remove added paths.
             remove_added_session_paths()
@@ -1646,18 +1569,19 @@ def process_scene(scn_file_path, wrk_order):
 
             ####################################################################
 
+    nodes_text_file = os.path.join(scene_ingest_dir, "{}_nodes.txt".format(scene_name))
+
     # Get the nodes to check in.
-    asset_nodes = get_asset_nodes()
+    asset_nodes = get_asset_nodes(nodes_text_file)
 
     # Export the nodes to their own MAX file.
     asset_data_dict = export_nodes(asset_nodes, scene_ingest_dir)
 
     global MANIFEST_ASSETS_PATH
     MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
-    manifest_assets_file = open(MANIFEST_ASSETS_PATH, "a")
-    manifest_assets_file.write("{}\n".format(scn_file_path))
-    manifest_assets_file.write("\t{} nodes:\n".format(len(asset_data_dict)))
-    manifest_assets_file.close()
+    with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
+        manifest_assets_file.write("{}\n".format(scn_file_path))
+        manifest_assets_file.write("\t{} nodes:\n".format(len(asset_data_dict)))
 
     # If DEBUG_SKIP_EXPORT_MAX is True, there is no MAX file to QC or
     # check in.
@@ -1671,7 +1595,7 @@ def process_scene(scn_file_path, wrk_order):
 
     # QC and check-in all the assets found.
     print("QC and Check-in assets for scene:\n{}".format(current_file_path))
-    for asset_name in sorted(asset_data_dict.keys(), key=lambda x: alphanum_key(x)):
+    for asset_name in sorted(asset_data_dict.keys(), key=lambda x: sort_key_alphanum(x)):
         asset_file_path = asset_data_dict[asset_name].get("max")
         original_node_name = asset_data_dict[asset_name].get("original_node")
         original_t_matrix = asset_data_dict[asset_name].get("original_t_matrix")
@@ -1681,19 +1605,20 @@ def process_scene(scn_file_path, wrk_order):
 
         # QC asset
         if DEBUG_SKIP_QC:
-            print("\tSkipping QC for {}".format(asset_name))
+            if DEBUG_PRINT:
+                print("\tSkipping QC for {}".format(asset_name))
         else:
             # Open file
             print("\tOpening {}".format(asset_file_path))
             mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
 
             # Put everything in a group.
-            nodes = [c for c in Core.GetRootNode().Children]
+            nodes = [c for c in list(mxs.rootScene[mxs.name("world")].object.children)]
             for node in nodes:
-                node.Select()
+                node.isSelected = True
 
-            Core.EvalMAXScript('group selection name: "__QC__"')
-            SelectionManager.ClearNodeSelection(True)
+            mxs.group(list(mxs.selection), name="__QC__")
+            mxs.clearSelection()
 
             # Make QC directories.
             max_file_name = os.path.basename(asset_file_path).rsplit(".", 1)[0]
@@ -1702,7 +1627,7 @@ def process_scene(scn_file_path, wrk_order):
                 os.makedirs(qc_tool_exports_dir)
             qc_max_file_path = "{}_QC.max".format(os.path.join(qc_tool_exports_dir, max_file_name))
 
-            FileManager.Save(qc_max_file_path, True, True)
+            mxs.saveMaxFile(qc_max_file_path, clearNeedSaveFlag=True, useNewFile=True, quiet=True)
 
             # QC EXPORT
             if QC_EXPORT:
@@ -1714,7 +1639,8 @@ def process_scene(scn_file_path, wrk_order):
 
         # CHECK-IN
         if DEBUG_SKIP_ASSET_CHECKIN:
-            print("\tSkipping Check-in for {}".format(asset_name))
+            if DEBUG_PRINT:
+                print("\tSkipping Check-in for {}".format(asset_name))
             continue
 
         description = (
@@ -1730,9 +1656,9 @@ def process_scene(scn_file_path, wrk_order):
 
         # Check-in asset.
         file_collection = check_in_asset(
-            asset_file_path, 
+            asset_file_path,
             wrk_order,
-            asset_name, 
+            asset_name,
             description,
             matrix=original_t_matrix,
             qc_renders=qc_renders,
@@ -1746,12 +1672,11 @@ def process_scene(scn_file_path, wrk_order):
             SG.update("CustomEntity16", file_collection.get("id"), {"sg_upstream": scene_file_collection})
 
         if file_collection:
-            manifest_assets_file = open(MANIFEST_ASSETS_PATH, "a")
-            manifest_assets_file.write("\t{}\n".format(asset_name))
-            manifest_assets_file.close()
+            with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
+                manifest_assets_file.write("\t{}\n".format(asset_name))
 
     # Reset scene
-    FileManager.Reset(True)
+    mxs.resetMaxFile(mxs.Name("noPrompt"))
 
     # Remove added paths.
     remove_added_session_paths()
@@ -1780,7 +1705,6 @@ def qc_images_add_hdr():
 qc_images_add_hdr()
 
 
-# "process_files" function from QC batch tool
 def qc_render(files_list, render_mode, render_ext, output_path):
     """Perform QC renders.
 
@@ -1796,41 +1720,43 @@ def qc_render(files_list, render_mode, render_ext, output_path):
     # get the qc-tool maxscript object
     qc_renders = []
     qc_tool = get_qc_tool()
-    if qc_tool:
-        # process the files
-        for f in files_list:
-            f_norm = os.path.normpath(f)
-            print("  Opening file: {}".format(f_norm))
-            if mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
-                qc_tool.init()
-                if qc_tool.modelRoot:
-                    if "Model" in render_mode:
-                        qc_tool.setVal(u"Render Mode", u"Model")
-                        qc_tool.setVal(u"Output Types", render_ext)
-                        result = qc_tool.renderAll(outPath=output_path)
-                        if "Render was cancelled!" in result:
-                            break
-                    if "Lookdev" in render_mode:
-                        qc_tool.setVal(u"Render Mode", u"Lookdev")
-                        qc_tool.setVal(u"Output Types", render_ext)
-                        qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
-                        result = qc_tool.renderAll(outPath=output_path)
-                        if "Render was cancelled!" in result:
-                            break
-                else:
-                    print("Model not found in file: {}".format(f_norm))
-            else:
-                print("Error opening file: {}".format(f_norm))
+    if not qc_tool:
+        return qc_renders
+    # process the files
+    for f in files_list:
+        f_norm = os.path.normpath(f)
+        print("  Opening file: {}".format(f_norm))
+        if not mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
+            print("Error opening file: {}".format(f_norm))
+            return qc_renders
+        qc_tool.init()
+        if not qc_tool.modelRoot:
+            print("Model not found in file: {}".format(f_norm))
+            return qc_renders
+        if "Model" in render_mode:
+            qc_tool.setVal(u"Render Mode", u"Model")
+            qc_tool.setVal(u"Output Types", render_ext)
+            result = qc_tool.renderAll(outPath=output_path)
+            if "Render was cancelled!" in result:
+                return qc_renders
+        else:  # "Lookdev"
+            qc_tool.setVal(u"Render Mode", u"Lookdev")
+            qc_tool.setVal(u"Output Types", render_ext)
+            qc_tool.setVal(u"Hero Resolution", 2)  # 1000x1000px
+            result = qc_tool.renderAll(outPath=output_path)
+            if "Render was cancelled!" in result:
+                return qc_renders
 
     if os.path.isdir(output_path):
         qc_renders = [
-            os.path.join(output_path, dir_file) 
-            for dir_file in os.listdir(output_path) 
+            os.path.join(output_path, dir_file)
+            for dir_file in os.listdir(output_path)
             if dir_file.lower().endswith(".png")]
 
     return qc_renders
 
 
+# "process_files" function from QC batch tool
 def qc_vrscene_export(max_file_path):
     """Export VRScenes instead of renders.
 
@@ -1898,7 +1824,7 @@ def qc_vrscene_farm_submit(task, file_collection):
             "sg_asset_package_upstream": file_collection,
             "sg_asset_package_downstream": file_collection,
             "sg_deliverable_package": task.get("entity"),
-            "sg_frames": "{}".format(Core.GetCurrentTime()),
+            "sg_frames": "{}".format(int(mxs.currentTime.frame)),
             "sg_frames_increment": 1,
             "sg_image_filename": "{}".format(pub_file.get("name").replace(".vrscene", ".jpg")),
             "sg_image_height": 1000,
@@ -1987,9 +1913,8 @@ def search_and_process(search_path, wrk_order):
     most_recent_processed_file_path = None
     skip = False
     if os.path.exists(MANIFEST_MOST_RECENT):
-        most_recent_processed_file = open(MANIFEST_MOST_RECENT, "r")
-        most_recent_processed_file_path = most_recent_processed_file.read()
-        most_recent_processed_file.close()
+        with open(MANIFEST_MOST_RECENT, "r") as most_recent_processed_file:
+            most_recent_processed_file_path = most_recent_processed_file.read()
         skip = True
 
     count = 0       # Total count.
@@ -2029,18 +1954,15 @@ def search_and_process(search_path, wrk_order):
 
             if process_success:
                 # Write to manifest files.
-                manifest_file = open(MANIFEST_FILE_PATH, "a")
-                manifest_file.write("{}\n".format(max_file))
-                manifest_file.close()
-                most_recent_processed_file = open(MANIFEST_MOST_RECENT, "w")
-                most_recent_processed_file.write(max_file)
-                most_recent_processed_file.close()
+                with open(MANIFEST_FILE_PATH, "a") as manifest_file:
+                    manifest_file.write("{}\n".format(max_file))
+                with open(MANIFEST_MOST_RECENT, "w") as most_recent_processed_file:
+                    most_recent_processed_file.write(max_file)
 
                 cur_success_count += 1
             else:
-                failed_processed_file = open(MANIFEST_FAILED_PATH, "a")
-                failed_processed_file.write("{}\n".format(max_file))
-                failed_processed_file.close()
+                with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
+                    failed_processed_file.write("{}\n".format(max_file))
 
             # Increment count.
             count += 1
@@ -2056,17 +1978,49 @@ def search_and_process(search_path, wrk_order):
     print("Manifest written: {}".format(MANIFEST_FILE_PATH))
 
 
-def similar(str1, str2):
-    """Are the strings similar enough?
+def sort_key_alphanum(s, case_sensitive=False):
+    """Turn a string into a list of string and number chunks.
+    Using this key for sorting will order alphanumeric strings properly.
+
+    "ab123cd" -> ["ab", 123, "cd"]
 
     Args:
-        str1 (str): First string to compare.
-        str2 (str): Second string to compare.
-
+        s (str): Given string.
+        case_sensitive (bool): If True, capital letters will go first.
     Returns:
-        bool: Are the strings similar enough?
+        list[int|str]: Mixed list of strings and integers in the order they occurred in the given string.
     """
-    return SequenceMatcher(None, str1, str2).ratio() > SIMILAR_RATIO
+    def cast_to_int(str_chunk, cs_snstv):
+        """Convert string to integer if it's a number.
+        In certain cases, ordering filenames takes case-sensitivity into consideration.
+
+        Windows default sorting behavior:
+        ["abc1", "ABC2", "abc3"]
+
+        Linux, Mac, PySide, & Python default sorting behavior:
+        ["ABC2", "abc1", "abc3"]
+
+        Case-sensitivity is off by default.
+
+        Args:
+            str_chunk (str): Given string chunk.
+            cs_snstv (bool): If True, capital letters will go first.
+
+        Returns:
+            int|str: If the string represents a number, return the number.
+                Otherwise, return the string.
+        """
+        try:
+            return int(str_chunk)
+        except ValueError:
+            if cs_snstv:
+                return str_chunk
+            # Make it lowercase so the ordering is no longer case-sensitive.
+            return str_chunk.lower()
+
+    ##########
+
+    return [cast_to_int(chunk, case_sensitive) for chunk in re.split("([0-9]+)", s)]
 
 
 if __name__ == "__main__":
@@ -2088,7 +2042,7 @@ if __name__ == "__main__":
     # Silence V-Ray dialog for older versions.
     mxs.setVRaySilentMode()
 
-    curr_path = FileManager.GetFileNameAndPath()
+    curr_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
 
     # If a scene is already open, process it.
     if curr_path:
@@ -2103,8 +2057,8 @@ if __name__ == "__main__":
             search_and_process(SEARCH_PATH, work_order)
 
     # Reset scene.
-    FileManager.Reset(True)
+    mxs.resetMaxFile(mxs.Name("noPrompt"))
 
     print("== Ingest Complete ==")
 
-    # Core.EvalMAXScript("quitmax #noprompt")
+    # mxs.quitMax(mxs.Name("noprompt"))
