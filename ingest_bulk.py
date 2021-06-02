@@ -82,15 +82,15 @@ from qc_batch_tool import get_qc_tool
 # GLOBALS
 
 # Debug globals
-DEBUG_ASSET_EXPORT_COUNT_LIMIT = 0  # 0 exports all.
+DEBUG_ASSET_EXPORT_COUNT_LIMIT = 3  # 0 exports all.
 DEBUG_PRINT = False
 DEBUG_SCENE_COUNT_LIMIT = 0  # 0 exports all.
-DEBUG_SKIP_ASSET_CHECKIN = False
+DEBUG_SKIP_ASSET_CHECKIN = True
 DEBUG_SKIP_EXPORT_MAX = False
 DEBUG_SKIP_MATERIAL_JSON = False
-DEBUG_SKIP_QC = False
-DEBUG_SKIP_QC_FARM = False
-DEBUG_SKIP_SCENE_CHECKIN = False
+DEBUG_SKIP_QC = True
+DEBUG_SKIP_QC_FARM = True
+DEBUG_SKIP_SCENE_CHECKIN = True
 
 # Globals
 DEFAULT_PERSP_VIEW_MATRIX = mxs.Matrix3(
@@ -107,7 +107,7 @@ IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN"
                "productized"]
 # Don't process MAX files with these words in the filename.
 IGNORE_IN_MAX_FILE_NAMES = ["corona"]
-logging.basicConfig()
+logging.basicConfig(level=logging.DEBUG)
 LOGGER = logging.getLogger()
 MANIFEST_ASSETS_PATH = None
 MANIFEST_FAILED_PATH = None
@@ -115,7 +115,6 @@ MANIFEST_FILE_PATH = None
 MANIFEST_MOST_RECENT = None  # Path to "current" manifest file.
 MAX_FILE_OLDEST = False  # True: Ingest the oldest MAX file; False: newest.
 ORIGIN_POSITION = mxs.Point3(0, 0, 0)
-ORIGIN_TRANSFORM_MATRIX = mxs.Matrix3(1)
 QC_EXPORT = True  # True: Export vrscenes; False: render QC passes in place.
 # Import these images to render QC vrscenes.
 qc_tool_folder = get_tool_dir("QC-Tool")
@@ -146,11 +145,11 @@ def check_file_io_gamma():
     if mxs.fileInGamma != mxs.displayGamma:
         mxs.fileInGamma = mxs.displayGamma
         result = False
-        print("Updating file in gamma to match display gamma!")
+        LOGGER.info("Updating file in gamma to match display gamma!")
     if mxs.fileOutGamma != mxs.displayGamma:
         mxs.fileOutGamma = mxs.displayGamma
         result = False
-        print("Updating file out gamma to match display gamma!")
+        LOGGER.info("Updating file out gamma to match display gamma!")
     return result
 
 
@@ -174,7 +173,7 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
     # If full_scene, assume the scene is already open.
     if not full_scene:
         # Open file
-        print("\tOpening {}".format(asset_file_path))
+        LOGGER.info("\tOpening {}".format(asset_file_path))
         mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
 
         # Add images used by QC so vrscenes will render.
@@ -183,18 +182,18 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
         pub_others.extend(QC_IMAGES)
 
     if DEBUG_SKIP_MATERIAL_JSON or full_scene:
-        print("\tSkipping Material Network JSON for {}".format(asset_name))
+        LOGGER.debug("\tSkipping Material Network JSON for {}".format(asset_name))
     else:
-        print("\tExporting Material Network JSON for {}".format(asset_name))
+        LOGGER.info("\tExporting Material Network JSON for {}".format(asset_name))
         json_mat_path = None
         try_count = 0
         while try_count < 3:
             try:
                 json_mat_path = export_material_json(asset_file_path)
-                print("\tSuccessfully exported material json export.")
+                LOGGER.info("\tSuccessfully exported material json export.")
                 break
             except Exception:
-                print("\tError occurred during material json export.")
+                LOGGER.info("\tError occurred during material json export.")
                 try_count += 1
         if json_mat_path is not None:
             if pub_others is None:
@@ -251,48 +250,52 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
 
     # If check-in fails, it returns False.
     if file_collection is False:
-        print("Check-in failed.")
+        LOGGER.info("Check-in failed.")
         return None
 
     # Update published files with matrix transform data.
-    if not full_scene:
-        for pub_file in file_collection.get("sg_published_file_entity_links"):
-            pub_file = SG.find_one(
-                "PublishedFile",
-                [["id", "is", pub_file.get("id")]],
-                ["code", "sg_context", "sg_source_transform_matrix"])
+    if full_scene:
+        return file_collection
 
-            if pub_file.get("sg_context") in ["geo_abc_exported", "geo_max"]:
-                SG.update("PublishedFile", pub_file.get("id"), {"sg_source_transform_matrix": matrix})
+    for pub_file in file_collection.get("sg_published_file_entity_links"):
+        pub_file = SG.find_one(
+            "PublishedFile",
+            [["id", "is", pub_file.get("id")]],
+            ["code", "sg_context", "sg_source_transform_matrix"])
 
-        # Get metadata for asset.
-        asset_meta_data = get_asset_metadata()
+        if pub_file.get("sg_context") in ["geo_abc_exported", "geo_max"]:
+            SG.update("PublishedFile", pub_file.get("id"), {"sg_source_transform_matrix": matrix})
 
-        file_collection = SG.update(
-            file_collection.get("type"),
-            file_collection.get("id"),
-            {
-                "sg_bbox_width": asset_meta_data.get("bbox_width"),
-                "sg_bbox_height": asset_meta_data.get("bbox_height"),
-                "sg_bbox_depth": asset_meta_data.get("bbox_depth"),
-                "sg_bbox_units": asset_meta_data.get("bbox_units"),
-                "sg_mdl_polygon_count": asset_meta_data.get("poly_count"),
-                "sg_mdl_vertex_count": asset_meta_data.get("vert_count"),
-                "sg_mtl_bitmap_count": asset_meta_data.get("mtl_bitmap_count"),
-                "sg_mtl_material_count": asset_meta_data.get("mtl_material_count"),
-                "sg_mtl_roughness_count": asset_meta_data.get("mtl_roughness_count"),
-                "sg_mtl_uv_tiles_count": asset_meta_data.get("mtl_uv_tiles_count"),
-            }
-        )
+    # Get metadata for asset.
+    asset_meta_data = get_asset_metadata()
 
-        # Submit vrscenes to farm.
-        if not DEBUG_SKIP_QC_FARM and not DEBUG_SKIP_QC and QC_EXPORT:
-            jobs = qc_vrscene_farm_submit(task, file_collection)
+    file_collection = SG.update(
+        file_collection.get("type"),
+        file_collection.get("id"),
+        {
+            "sg_bbox_width": asset_meta_data.get("bbox_width"),
+            "sg_bbox_height": asset_meta_data.get("bbox_height"),
+            "sg_bbox_depth": asset_meta_data.get("bbox_depth"),
+            "sg_bbox_units": asset_meta_data.get("bbox_units"),
+            "sg_mdl_polygon_count": asset_meta_data.get("poly_count"),
+            "sg_mdl_vertex_count": asset_meta_data.get("vert_count"),
+            "sg_mtl_bitmap_count": asset_meta_data.get("mtl_bitmap_count"),
+            "sg_mtl_material_count": asset_meta_data.get("mtl_material_count"),
+            "sg_mtl_roughness_count": asset_meta_data.get("mtl_roughness_count"),
+            "sg_mtl_uv_tiles_count": asset_meta_data.get("mtl_uv_tiles_count"),
+        }
+    )
 
-            if jobs:
-                print("Farm Jobs submitted for {}:".format(asset_name))
-                for job in jobs:
-                    print("\t{}".format(job.get("code")))
+    # Submit vrscenes to farm.
+    if not DEBUG_SKIP_QC_FARM and not DEBUG_SKIP_QC and QC_EXPORT:
+        jobs = qc_vrscene_farm_submit(task, file_collection)
+
+        if not jobs:
+            return file_collection
+
+        LOGGER.info("Farm Jobs submitted for {}:".format(asset_name))
+        for job in jobs:
+            LOGGER.info("\t{}".format(job.get("code")))
 
     return file_collection
 
@@ -362,16 +365,16 @@ def check_in_scene(current_file_path, scn_file_path, wrk_order):
     mxs.resetMaxFile(mxs.Name("noPrompt"))
 
     if file_collection is None:
-        print("Check-in scene failed.")
+        LOGGER.warning("Check-in scene failed.")
         return None
 
     asset = file_collection.get("asset_sg_asset_package_links_assets")[0]
     task = get_task(asset.get("id"))
 
-    print("Check-Out Scene")
+    LOGGER.info("Check-Out Scene")
     result = check_out(task.get("id"))
-    print("Check-Out Result")
-    print(result)
+    LOGGER.info("Check-Out Result")
+    LOGGER.info(result)
 
     replace_non_ascii_paths()
 
@@ -449,10 +452,10 @@ def collect_scene_files():
             ::
             {
                 file_path: {
-                                node_object: {
-                                                  "path_attr": [path_property],
-                                             },
-                           },
+                    node_object: {
+                        "path_attr": [path_property],
+                    },
+                },
             }
     """
     def get_all_external_files():
@@ -536,15 +539,12 @@ def collect_scene_files():
     return files_dict
 
 
-def export_material_json(asset_file_path):
+def export_json_material(json_path, nodes=mxs.objects):
     """Write a JSON file mimicking the material network per node.
-    JSON file will be written in the same dir as asset_file_path.
 
     Args:
-        asset_file_path (str): Path to MAX file from which the asset came.
-
-    Returns:
-        str: JSON file output path.
+        json_path (str): Path to json file to which to write.
+        nodes (list[pymxs.MXSWrapperBase]): Nodes whose material networks to extract.
     """
     def get_properties(obj_material):
         """Get properties from object material.
@@ -594,7 +594,7 @@ def export_material_json(asset_file_path):
             result = {}
             try:
                 obj_properties = get_prop_names(obj_material)
-            except Exception:
+            except:
                 obj_properties = []
             if hasattr(obj_material, "name"):
                 result["name"] = str(obj_material.name)
@@ -611,18 +611,231 @@ def export_material_json(asset_file_path):
     ####################
 
     json_dict = {}
-    for max_obj in mxs.objects:
+    for max_obj in nodes:
         # get object's material info as a dict
         mat_dict = get_properties(max_obj.material)
 
         if mat_dict:
             json_dict[max_obj.name] = mat_dict
 
-    json_path = "{}_mat_network.json".format(asset_file_path.rsplit(".", 1)[0])
     with io.open(json_path, "w", encoding="utf8") as json_file:
         json_file.write(unicode(json.dumps(json_dict, ensure_ascii=False, indent=4)))
 
-    return json_path
+
+def export_json_metadata(node, data, json_path):
+    """Export a json file with metadata to later be used in check-in.
+
+    Args:
+        node (pymxs.MXSWrapperBase): Node whose metadata to export.
+        data (dict): Data to add to the metadata json file.
+        json_path (str): Path to json file to write.
+    """
+    def check_bbox(obj=mxs.objects):
+        """Check the bounding box info based on the scene and display units.
+
+        This info is supplied to a SG field(s)
+
+        Args:
+            obj (pymxs.MXSWrapperBase): Node or MaxScript collection of all objects.
+                Default: All objects collection.
+
+        Returns:
+            dict, dict: units, bounding box dimensions
+                ::
+                {type: unit type},
+                {"d": float, "h": float, "w": float}
+        """
+        units = {}
+        bounding_box = {}
+
+        units_system = str(mxs.units.systemType).lower()
+        units_display = str(mxs.units.displayType).lower()
+
+        try:
+            if units_display == "metric":
+                # Max formats: Millimeters, Centimeters, Meters, Kilometers
+                units_display = str(mxs.units.metricType).lower()
+                if units_display == "centimeters":
+                    units_display = "cm"
+                elif units_display == "millimeters":
+                    units_display = "mm"
+                elif units_display == "meters":
+                    units_display = "m"
+
+            else:
+                # Max formats:
+                # Frac_In, Dec_In, Frac_Ft, Dec_Ft, Ft_Frac_In, Ft_Dec_In
+                # Frac_1_1, Frac_1_2, Frac_1_4, Frac_1_8, Frac_1_10, Frac_1_16
+                # Frac_1_32, Frac_1_64, Frac_1_100
+                # units_display = str(mxs.units.usType).lower()
+                units_display = "ft"
+
+        except Exception as e:
+            LOGGER.warning("Error: {}".format(e))
+            return None
+
+        units["System Units"] = units_system
+        units["Display Units"] = units_display
+
+        try:
+            obj_min = obj.min
+            obj_max = obj.max
+        except AttributeError:
+            obj_min = None
+            obj_max = None
+
+        if obj_min:
+            size_w = obj_max.y - obj_min.y
+            size_d = obj_max.x - obj_min.x
+            size_h = obj_max.z - obj_min.z
+
+            bounding_box["d"] = size_d
+            bounding_box["h"] = size_h
+            bounding_box["w"] = size_w
+
+        return units, bounding_box
+
+    def get_metadata(cur_node):
+        """Returns metadata for given node.
+
+        Args:
+            cur_node (pymxs.MXSWrapperBase): Node from which to get metadata.
+
+        Returns:
+            dict: Metadata for given node.
+        """
+        meta = Meta()
+
+        material_nodes = []
+        material_vray_nodes = []
+        texture_nodes = []
+        texture_nodes_unique = set()
+        texture_file_nodes = set()
+        texture_files_unique = set()
+        texture_coords_nodes = []
+        objs = get_all_nodes([cur_node])
+        materials_and_textures = meta.get_materials_and_textures(objs)
+        nodes_data = meta.get_nodes_data(materials_and_textures)
+
+        for nd, node_info in nodes_data.items():
+            if node_info["type"] == "Material":
+                material_nodes.append(nd)
+                if mxs.classOf(nd) == mxs.VRayMtl:
+                    material_vray_nodes.append(nd)
+            elif node_info["type"] == "Texture":
+                texture_nodes.append(unicode(nd))
+                texture_nodes_unique.add(unicode(nd))
+                if node_info["files"]:
+                    text_file_path = node_info["files"].values()
+                    text_file_name = text_file_path[0].rsplit("\\", 1)[1]
+                    node_with_file_name = unicode(nd) + " >>> " + text_file_name
+                    texture_file_nodes.add(node_with_file_name)
+                    # only add unique file names
+                    texture_files_unique.add(text_file_name)
+                if hasattr(nd, "coords"):
+                    texture_coords_nodes.append(nd)
+
+        # converting sets to list to return same types
+        texture_nodes_unique = list(texture_nodes_unique)
+        texture_file_nodes = list(texture_file_nodes)
+        texture_files_unique = list(texture_files_unique)
+
+        # file format check
+        texture_files_unwanted = meta.check_file_format(texture_files_unique)
+
+        # pbr check
+        material_vray_roughness, material_vray_roughness_off = meta.check_bdrf_roughness(material_vray_nodes)
+
+        # bbox
+        unit_types, bbox_dim = check_bbox(cur_node)
+        # check num uv maps
+        num_uv_maps = meta.check_num_uv_maps(objs)
+
+        metadata = {
+            "material_nodes": material_nodes,
+            "texture_nodes": texture_nodes,
+            "texture_nodes_unique": texture_nodes_unique,
+            "texture_file_nodes": texture_file_nodes,
+            "texture_files_unique": texture_files_unique,
+            "texture_files_unwanted": texture_files_unwanted,
+            "material_vray_nodes": material_vray_nodes,
+            "material_vray_roughness": material_vray_roughness,
+            "material_vray_roughness_off": material_vray_roughness_off,
+            "unit_types": unit_types,
+            "bbox_dim": bbox_dim,
+            "num_uv_maps": num_uv_maps}
+
+        return metadata
+
+    def get_total_poly_and_vert_count(root_node):
+        """Returns list pair of poly_count and vert_count of root_node and all descendants.
+
+        Args:
+            root_node (pymxs.MXSWrapperBase): Parent node.
+
+        Returns:
+            list[int]: List pair of poly_count and vert_count.
+        """
+        objs = get_all_nodes([root_node])
+        objs.append(root_node)
+        counter = [0, 0]
+        for obj in objs:
+            if mxs.canConvertTo(obj, mxs.Editable_Poly):
+                temp = mxs.copy(obj)
+                mxs.convertToPoly(temp)
+                temp_count = mxs.getPolygonCount(temp)
+                counter[0] += temp_count[0]
+                counter[1] += temp_count[1]
+                mxs.delete(temp)
+
+        return counter
+
+    ###########
+    ###########
+
+    col_nodes = get_metadata(node)
+
+    mtl_bitmap_count = len(col_nodes.get("texture_files_unique"))
+    mtl_material_count = len(col_nodes.get("material_nodes"))
+    mtl_roughness_count = len(col_nodes.get("material_vray_roughness_off"))
+    mtl_uv_tiles_count = len(col_nodes.get("num_uv_maps"))
+
+    # if the bbox dimensions are this large...
+    # something is wrong. The SG field
+    # won't accept a num > 1.00E9
+    if col_nodes["bbox_dim"].get("d") > 1.00E9:
+        col_nodes["bbox_dim"]["d"] = None
+    if col_nodes["bbox_dim"].get("h") > 1.00E9:
+        col_nodes["bbox_dim"]["h"] = None
+    if col_nodes["bbox_dim"].get("w") > 1.00E9:
+        col_nodes["bbox_dim"]["w"] = None
+    bbox = {
+        "units": col_nodes["unit_types"].get("Display Units"),
+        "depth": col_nodes["bbox_dim"].get("d"),
+        "height": col_nodes["bbox_dim"].get("h"),
+        "width": col_nodes["bbox_dim"].get("w")}
+
+    top_nodes = list(mxs.rootScene[mxs.name("world")].object.children)
+    poly_count, vert_count = get_total_poly_and_vert_count(top_nodes[0])
+
+    scene_meta = {
+        "bbox_width": bbox.get("width"),
+        "bbox_depth": bbox.get("depth"),
+        "bbox_height": bbox.get("height"),
+        "bbox_units": bbox.get("units"),
+        "company_entity_id": INGEST_COMPANY_ENTITY.get("id"),
+        "mtl_bitmap_count": mtl_bitmap_count,
+        "mtl_material_count": mtl_material_count,
+        "mtl_roughness_count": mtl_roughness_count,
+        "mtl_uv_tiles_count": mtl_uv_tiles_count,
+        "original_max_file": os.path.join(mxs.maxFilePath, mxs.maxFileName),
+        "original_t_matrix": data.get("original_t_matrix"),
+        "texture_files_unique": col_nodes.get("texture_files_unique"),
+        "poly_count": poly_count,
+        "vert_count": vert_count}
+
+    with io.open(json_path, "w", encoding="utf8") as json_file:
+        json_file.write(unicode(json.dumps(scene_meta, ensure_ascii=False, indent=4)))
 
 
 def export_node(node, name, nodes_hide_state, export_dir):
@@ -666,24 +879,26 @@ def export_node(node, name, nodes_hide_state, export_dir):
 
         for row in range(4):
             point = tm[row]
-
-            x = point.x
-            x = int(x) if int(x) == x else x
-            y = point.y
-            y = int(y) if int(y) == y else y
-            z = point.z
-            z = int(z) if int(z) == z else z
-
-            point_string_list.append("({}, {}, {})".format(x, y, z))
+            point_string_list.append("({}, {}, {})".format(point.x, point.y, point.z))
 
         return ", ".join(point_string_list)
 
-    ####################
+    ##########
+    ##########
 
-    node_export_data = {"max": "", "original_node": node.Name, "original_t_matrix": get_transform_matrix(node)}
+    node_export_data = {"max": "", "original_node": node.Name}
 
     for n in get_all_nodes([node]):
         n.isNodeHidden = nodes_hide_state.get(n.Name)
+
+    bbox_min = node.min
+    bbox_max = node.max
+    pivot = mxs.Point3((bbox_max.x + bbox_min.x)/2.0, (bbox_max.y + bbox_min.y)/2.0, bbox_min.z)
+
+    node_pivot = node.pivot
+    node.pivot = pivot
+
+    node_export_data["original_t_matrix"] = get_transform_matrix(node)
 
     node_pos = node.Position
     node.Position = ORIGIN_POSITION
@@ -703,25 +918,28 @@ def export_node(node, name, nodes_hide_state, export_dir):
     mxs.clearSelection()
     mxs.redrawViews()
 
-    if DEBUG_PRINT:
-        print("{}:".format(name))
+    LOGGER.debug("{}:".format(name))
 
     if DEBUG_SKIP_EXPORT_MAX:
-        if DEBUG_PRINT:
-            print("\tSkipping exporting MAX file for {}".format(name))
+        LOGGER.debug("\tSkipping exporting MAX file for {}".format(name))
     else:
         save_dir = os.path.join(export_dir, "assets")
 
         # Make the export directory if it doesn't exist.
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
-        save_path = os.path.join(save_dir, "{}.max".format(name))
+        path_max_scene = os.path.join(save_dir, "{}.max".format(name))
+        path_json_meta = os.path.join(save_dir, "{}_metadata.json".format(name))
+        path_json_mat = os.path.join(save_dir, "{}_mat_network.json".format(name))
+
+        LOGGER.debug("\tExporting MAX file: {}".format(path_max_scene))
 
         node.isSelected = True
-        mxs.saveNodes(list(mxs.selection), save_path, quiet=True)
-        if DEBUG_PRINT:
-            print("\tExporting MAX file: {}".format(save_path))
-        node_export_data["max"] = save_path
+        mxs.saveNodes(list(mxs.selection), path_max_scene, quiet=True)
+        node_export_data["max"] = path_max_scene
+        export_json_metadata(node, node_export_data, path_json_meta)
+        export_json_material(path_json_mat, get_all_nodes([node]))
+
         mxs.clearSelection()
 
     # Reset rotation
@@ -729,6 +947,7 @@ def export_node(node, name, nodes_hide_state, export_dir):
 
     # Reset position
     node.Position = node_pos
+    node.pivot = node_pivot
     for n in get_all_nodes([node]):
         n.isNodeHidden = True
 
@@ -739,7 +958,7 @@ def export_nodes(groups_to_export, export_dir):
     """Exports all nodes from a dictionary.
 
     Args:
-        groups_to_export (dict[str, list[pymxs.MXSWrapperBase]]): Dictionary of matched
+        groups_to_export (list[pymxs.MXSWrapperBase]): Dictionary of matched
             nodes lists.
         export_dir (str): Directory to which to export asset MAX files.
 
@@ -778,11 +997,7 @@ def export_nodes(groups_to_export, export_dir):
 
     # Make a list of (node, name) tuples.
     # For every node group, save one node to its own MAX file.
-    nodes = [
-        (groups_to_export.get(group_name)[0], clean_name(groups_to_export.get(group_name)[0].Name))
-        for group_name in groups_to_export if group_name != "_UNIQUE_NODES_"]
-    # Add the left over nodes.
-    nodes.extend([(node, clean_name(node.Name)) for node in groups_to_export.get("_UNIQUE_NODES_")])
+    nodes = [(node, clean_name(node.Name)) for node in groups_to_export]
     # sort by node name
     nodes.sort(key=lambda x: sort_key_alphanum(x[1], True))
 
@@ -798,7 +1013,7 @@ def export_nodes(groups_to_export, export_dir):
         export_msg.replace("...", " (Debug)...")
         num_nodes = total
 
-    print(export_msg.format(num_nodes))
+    LOGGER.info(export_msg.format(num_nodes))
 
     # EXPORT Node to it's own MAX node.
     ############################################################################
@@ -832,7 +1047,7 @@ def export_nodes(groups_to_export, export_dir):
 
     mxs.redrawViews()
 
-    print("\n{} nodes exported.".format(num_nodes))
+    LOGGER.info("\n{} nodes exported.".format(num_nodes))
 
     return nodes_data_dict
 
@@ -940,8 +1155,7 @@ def find_duplicate_nodes(nodes):
             if not check_geo_and_mat(nodes[i], nodes[j]):
                 continue
 
-            if DEBUG_PRINT:
-                print("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
+            LOGGER.debug("Nodes \"{}\" and \"{}\" match".format(nodes[i].Name, nodes[j].Name))
 
             # If this is the first match for the first node, put it in the
             # groups dictionary and matches list.
@@ -970,7 +1184,8 @@ def get_all_nodes(nodes=None):
     """
     all_nodes_list = []
     if nodes is None:
-        nodes = list(mxs.rootScene[mxs.name("world")].object.children)
+        return sorted(list(mxs.objects), key=lambda n: sort_key_alphanum(n.Name))
+
     for node in nodes:
         if node.children.count:
             all_nodes_list.extend(get_all_nodes(list(node.children)))
@@ -1037,6 +1252,8 @@ def get_asset_metadata():
                 mxs.delete(temp)
         return counter
 
+    ##########
+
     meta = Meta()
     collected_nodes = meta.get_collected_nodes()
 
@@ -1086,7 +1303,7 @@ def get_asset_nodes(nodes_text_file):
        nodes_text_file (str): Path to text file to which to write all node names.
 
     Returns:
-       dict[str, list[pymxs.MXSWrapperBase]]: Nodes that represent assets to ingest.
+       list[pymxs.MXSWrapperBase]: Nodes that represent assets to ingest.
     """
     top_level_nodes = sorted(
         [c for c in list(mxs.rootScene[mxs.name("world")].object.children) if include_node(c)],
@@ -1100,37 +1317,36 @@ def get_asset_nodes(nodes_text_file):
         else:
             geo_nodes.append(node)
 
-    if DEBUG_PRINT:
-        print("Number of Geo Nodes found: {}".format(len(geo_nodes)))
-        print("Number of Group Nodes found: {}".format(len(group_nodes)))
+    # print("Number of Geo Nodes found: {}".format(len(geo_nodes)))
+    LOGGER.debug("Number of Group Nodes found: {}".format(len(group_nodes)))
 
-    matched_geo_nodes = find_duplicate_nodes(geo_nodes)
-    matched_group_nodes = find_duplicate_nodes(group_nodes)
+    # matched_geo_nodes = find_duplicate_nodes(geo_nodes)
+    # matched_group_nodes = find_duplicate_nodes(group_nodes)
 
-    matched_nodes = matched_geo_nodes.copy()
-
-    # Merge geo nodes and group nodes into the group dictionary.
-    for grp_name in matched_group_nodes:
-        if grp_name in matched_geo_nodes:
-            matched_nodes[grp_name].extend(matched_group_nodes[grp_name])
-        else:
-            matched_nodes[grp_name] = matched_group_nodes.get(grp_name)
+    # matched_nodes = matched_geo_nodes.copy()
+    #
+    # # Merge geo nodes and group nodes into the group dictionary.
+    # for grp_name in matched_group_nodes:
+    #     if grp_name in matched_geo_nodes:
+    #         matched_nodes[grp_name].extend(matched_group_nodes[grp_name])
+    #     else:
+    #         matched_nodes[grp_name] = matched_group_nodes.get(grp_name)
 
     # Print the full list of organized nodes.
-    nodes_text_file_dir = os.path.dirname(nodes_text_file)
-    if not os.path.exists(nodes_text_file_dir):
-        os.makedirs(nodes_text_file_dir)
+    # nodes_text_file_dir = os.path.dirname(nodes_text_file)
+    # if not os.path.exists(nodes_text_file_dir):
+    #     os.makedirs(nodes_text_file_dir)
+    #
+    # with open(nodes_text_file, "w") as nodes_file:
+    #     # Print the full list of organized nodes.
+    #     nodes_file.write("Matched nodes:\n")
+    #
+    #     for grp_name in sorted(matched_nodes.keys(), key=lambda x: sort_key_alphanum(x)):
+    #         nodes_file.write("{}\n".format(grp_name))
+    #         for node in sorted(matched_nodes.get(grp_name), key=lambda x: sort_key_alphanum(x.Name)):
+    #             nodes_file.write("\t{}\n".format(node.Name))
 
-    with open(nodes_text_file, "w") as nodes_file:
-        # Print the full list of organized nodes.
-        nodes_file.write("Matched nodes:\n")
-
-        for grp_name in sorted(matched_nodes.keys(), key=lambda x: sort_key_alphanum(x)):
-            nodes_file.write("{}\n".format(grp_name))
-            for node in sorted(matched_nodes.get(grp_name), key=lambda x: sort_key_alphanum(x.Name)):
-                nodes_file.write("\t{}\n".format(node.Name))
-
-    return matched_nodes
+    return group_nodes
 
 
 def get_task(asset_id):
@@ -1143,16 +1359,7 @@ def get_task(asset_id):
         dict|None: Shotgun Task dictionary.
     """
     task = SG.find_one(
-        "Task",
-        [
-            [
-                "entity.CustomEntity25.sg_deliverable.CustomEntity24.sg_link.Asset.id",
-                "is",
-                asset_id
-            ]
-        ],
-        ["entity"]
-    )
+        "Task", [["entity.CustomEntity25.sg_deliverable.CustomEntity24.sg_link.Asset.id", "is", asset_id]], ["entity"])
     return task
 
 
@@ -1198,8 +1405,9 @@ def is_max_file_path_clean(path):
         bool: Is the path to the MAX file clean of words to avoid?
     """
     elements = []
+    path = path.lower()
     for e in IGNORE_IN_MAX_FILE_NAMES:
-        if e.lower() in path.lower():
+        if e.lower() in path:
             elements.append(e)
 
     return not bool(elements)
@@ -1257,19 +1465,18 @@ def process_scene(scn_file_path, wrk_order):
         """
         mssng_files = get_missing_files()
 
-        if mssng_files:
-            new_path = find_missing_filepaths(max_file_path, mssng_files[0])
-
-            if new_path:
-                print("Adding path {}".format(new_path))
-                mxs.sessionPaths.add(mxs.Name("map"), new_path)
-
-                add_session_paths(max_file_path)
-            else:
-                return mssng_files
-        else:
-            print("No missing files.")
+        if not mssng_files:
+            LOGGER.info("No missing files.")
             return []
+
+        new_path = find_missing_filepaths(max_file_path, mssng_files[0])
+
+        if not new_path:
+            return mssng_files
+
+        LOGGER.info("Adding path {}".format(new_path))
+        mxs.sessionPaths.add(mxs.Name("map"), new_path)
+        add_session_paths(max_file_path)
 
     def find_missing_filepaths(max_file_path, missing_file_name):
         """Searches for directory containing missing file.
@@ -1301,7 +1508,7 @@ def process_scene(scn_file_path, wrk_order):
         """
         mf = []
         mxs.enumerateFiles(mf.append, mxs.Name("missing"))
-        print(mf)
+        LOGGER.info(mf)
         return test_files_names([collect_scene_files()])
 
     def remove_added_session_paths():
@@ -1309,7 +1516,7 @@ def process_scene(scn_file_path, wrk_order):
         session_paths_count = mxs.sessionPaths.count(mxs.Name("map"))
         if session_paths_count > SESSION_PATH_START_COUNT:
             for i in reversed(range(SESSION_PATH_START_COUNT + 1, session_paths_count + 1)):
-                print("Removing path {}".format(mxs.sessionPaths.get(mxs.Name("map"), i)))
+                LOGGER.info("Removing path {}".format(mxs.sessionPaths.get(mxs.Name("map"), i)))
                 mxs.sessionPaths.delete(mxs.Name("map"), i)
 
     def test_files_names(file_collections):
@@ -1319,11 +1526,11 @@ def process_scene(scn_file_path, wrk_order):
             file_collections: File path node data.
                 ::
                 {
-                     file_path: {
-                                     node_object: {
-                                                       "path_attr": [path_property]
-                                                  }
-                                }
+                    file_path: {
+                        node_object: {
+                            "path_attr": [path_property]
+                        }
+                    }
                 }
 
         Returns:
@@ -1342,13 +1549,13 @@ def process_scene(scn_file_path, wrk_order):
                 except UnicodeEncodeError:
                     non_unicode.append(f)
         if missing_paths:
-            print("Missing the following paths:\n{}".format("\n".join(missing_paths)))
+            LOGGER.warning("Missing the following paths:\n{}".format("\n".join(missing_paths)))
 
         return missing_paths
 
     ##################################################
 
-    print("Opening scene: {}".format(os.path.basename(scn_file_path)))
+    LOGGER.info("Opening scene: {}".format(os.path.basename(scn_file_path)))
 
     # Open the scene file in Quiet mode.
     mxs.loadMaxFile(scn_file_path, useFileUnits=True, quiet=True)
@@ -1373,60 +1580,27 @@ def process_scene(scn_file_path, wrk_order):
 
     # Rename image files that are non-unicode
     if not missing_files:
-        print("Searching for non-ascii filenames...")
+        LOGGER.info("Searching for non-ascii filenames...")
         replace_non_ascii_paths()
 
     scene_file_collection = {}
-
-    if not DEBUG_SKIP_SCENE_CHECKIN:
-        if missing_files:
-            print("Missing the following files:\n{}".format("\n".join(missing_files)))
-            print("The scene {} is missing files.  Skipping scene.".format(os.path.basename(scn_file_path)))
-
-            # Reset scene
-            mxs.resetMaxFile(mxs.Name("noPrompt"))
-
-            # Remove added paths.
-            remove_added_session_paths()
-
-            return False
-        else:
-            print("No missing files!")
-
-            # Check in the whole scene.
-            ####################################################################
-
-            print("Check-in scene {}.".format(os.path.basename(scn_file_path)))
-            scene_file_collection = check_in_scene(current_file_path, scn_file_path, wrk_order)
-
-            ####################################################################
 
     nodes_text_file = os.path.join(scene_ingest_dir, "{}_nodes.txt".format(scene_name))
 
     # Get the nodes to check in.
     asset_nodes = get_asset_nodes(nodes_text_file)
 
-    # Export the nodes to their own MAX file.
-    asset_data_dict = export_nodes(asset_nodes, scene_ingest_dir)
-
     global MANIFEST_ASSETS_PATH
     MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
     with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
         manifest_assets_file.write("{}\n".format(scn_file_path))
-        manifest_assets_file.write("\t{} nodes:\n".format(len(asset_data_dict)))
+        manifest_assets_file.write("\t{} nodes:\n".format(len(asset_nodes)))
 
-    # If DEBUG_SKIP_EXPORT_MAX is True, there is no MAX file to QC or
-    # check in.
-    if DEBUG_SKIP_EXPORT_MAX:
-        print("\tSkipping QC & check-in for all assets in {}".format(current_file_path))
-        return False
-
-    if scene_file_collection is None:
-        print("\tScene check-in failed.  Skipping QC and check-in for all assets in {}".format(current_file_path))
-        return False
+    # Export the nodes to their own MAX file.
+    asset_data_dict = export_nodes(asset_nodes, scene_ingest_dir)
 
     # QC and check-in all the assets found.
-    print("QC and Check-in assets for scene:\n{}".format(current_file_path))
+    LOGGER.info("QC and Check-in assets for scene:\n{}".format(current_file_path))
     for asset_name in sorted(asset_data_dict.keys(), key=lambda x: sort_key_alphanum(x)):
         asset_file_path = asset_data_dict[asset_name].get("max")
         original_node_name = asset_data_dict[asset_name].get("original_node")
@@ -1437,11 +1611,10 @@ def process_scene(scn_file_path, wrk_order):
 
         # QC asset
         if DEBUG_SKIP_QC:
-            if DEBUG_PRINT:
-                print("\tSkipping QC for {}".format(asset_name))
+            LOGGER.debug("\tSkipping QC for {}".format(asset_name))
         else:
             # Open file
-            print("\tOpening {}".format(asset_file_path))
+            LOGGER.info("\tOpening {}".format(asset_file_path))
             mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
 
             # Put everything in a group.
@@ -1471,8 +1644,7 @@ def process_scene(scn_file_path, wrk_order):
 
         # CHECK-IN
         if DEBUG_SKIP_ASSET_CHECKIN:
-            if DEBUG_PRINT:
-                print("\tSkipping Check-in for {}".format(asset_name))
+            LOGGER.debug("\tSkipping Check-in for {}".format(asset_name))
             continue
 
         description = (
@@ -1557,13 +1729,13 @@ def qc_render(files_list, render_mode, render_ext, output_path):
     # process the files
     for f in files_list:
         f_norm = os.path.normpath(f)
-        print("  Opening file: {}".format(f_norm))
+        LOGGER.info("  Opening file: {}".format(f_norm))
         if not mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
-            print("Error opening file: {}".format(f_norm))
+            LOGGER.warning("Error opening file: {}".format(f_norm))
             return qc_renders
         qc_tool.init()
         if not qc_tool.modelRoot:
-            print("Model not found in file: {}".format(f_norm))
+            LOGGER.warning("Model not found in file: {}".format(f_norm))
             return qc_renders
         if "Model" in render_mode:
             qc_tool.setVal(u"Render Mode", u"Model")
@@ -1605,7 +1777,7 @@ def qc_vrscene_export(max_file_path):
         return qc_vrscenes
     f_norm = os.path.normpath(max_file_path)
     for render_mode in [u"Model", u"Lookdev"]:
-        print("  Opening file: {}".format(f_norm))
+        LOGGER.info("  Opening file: {}".format(f_norm))
         if not mxs.loadMaxFile(f_norm, useFileUnits=True, quiet=True):
             continue
         qc_tool.init()
@@ -1721,8 +1893,7 @@ def replace_non_ascii_paths():
             attrs_dict = map_dict.get(n)
             for attr in attrs_dict.get("path_attrs"):
                 mxs.setProperty(n, attr, new_path)
-        print("Non-ascii image file replaced.  "
-              "New Path: {}".format(new_path))
+        LOGGER.info("Non-ascii image file replaced.  New Path: {}".format(new_path))
 
 
 def search_and_process(search_path, wrk_order):
@@ -1755,7 +1926,7 @@ def search_and_process(search_path, wrk_order):
     cur_count = 0
     cur_success_count = 0
 
-    print("Searching for scenes to process in {}...".format(search_path))
+    LOGGER.info("Searching for scenes to process in {}...".format(search_path))
 
     # Walk through the search path, file MAX files, process them.
     for files in max_walk(search_path):
@@ -1777,7 +1948,7 @@ def search_and_process(search_path, wrk_order):
             continue
 
         max_file = files[0]
-        print("\n\nScene found: {}".format(max_file))
+        LOGGER.info("\n\nScene found: {}".format(max_file))
 
         ####################################################################
 
@@ -1806,10 +1977,10 @@ def search_and_process(search_path, wrk_order):
             break
 
     # os.remove(current_file_path)
-    print("{} total MAX scenes.".format(count))
-    print("{} current MAX scenes attempted.".format(cur_count))
-    print("{} current MAX scenes succeeded.".format(cur_success_count))
-    print("Manifest written: {}".format(MANIFEST_FILE_PATH))
+    LOGGER.info("{} total MAX scenes.".format(count))
+    LOGGER.info("{} current MAX scenes attempted.".format(cur_count))
+    LOGGER.info("{} current MAX scenes succeeded.".format(cur_success_count))
+    LOGGER.info("Manifest written: {}".format(MANIFEST_FILE_PATH))
 
 
 def sort_key_alphanum(s, case_sensitive=False):
@@ -1876,7 +2047,8 @@ if __name__ == "__main__":
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_001\scenes\AE34_001.max",
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2011.max",
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_003\003\AE34_003.max",
-        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max"
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max",
+        r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2020.max",
     ]
 
     # Silence V-Ray dialog for older versions.
@@ -1898,6 +2070,6 @@ if __name__ == "__main__":
     # Reset scene.
     mxs.resetMaxFile(mxs.Name("noPrompt"))
 
-    print("== Ingest Complete ==")
+    LOGGER.info("== Ingest Complete ==")
 
     # mxs.quitMax(mxs.Name("noprompt"))
