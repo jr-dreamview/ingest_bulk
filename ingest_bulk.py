@@ -82,7 +82,7 @@ from qc_batch_tool import get_qc_tool
 # GLOBALS
 
 # Debug globals
-DEBUG_ASSET_EXPORT_COUNT_LIMIT = 3  # 0 exports all.
+DEBUG_ASSET_EXPORT_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_PRINT = False
 DEBUG_SCENE_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_SKIP_ASSET_CHECKIN = True
@@ -727,8 +727,8 @@ def export_json_metadata(node, data, json_path):
                 texture_nodes_unique.add(unicode(nd))
                 if node_info["files"]:
                     text_file_path = node_info["files"].values()
-                    text_file_name = text_file_path[0].rsplit("\\", 1)[1]
-                    node_with_file_name = unicode(nd) + " >>> " + text_file_name
+                    text_file_name = os.path.basename(text_file_path[0])
+                    node_with_file_name = "{} >>> {}".format(unicode(nd), text_file_name)
                     texture_file_nodes.add(node_with_file_name)
                     # only add unique file names
                     texture_files_unique.add(text_file_name)
@@ -815,8 +815,7 @@ def export_json_metadata(node, data, json_path):
         "height": col_nodes["bbox_dim"].get("h"),
         "width": col_nodes["bbox_dim"].get("w")}
 
-    top_nodes = list(mxs.rootScene[mxs.name("world")].object.children)
-    poly_count, vert_count = get_total_poly_and_vert_count(top_nodes[0])
+    poly_count, vert_count = get_total_poly_and_vert_count(node)
 
     scene_meta = {
         "bbox_width": bbox.get("width"),
@@ -928,17 +927,27 @@ def export_node(node, name, nodes_hide_state, export_dir):
         # Make the export directory if it doesn't exist.
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
-        path_max_scene = os.path.join(save_dir, "{}.max".format(name))
+        path_max_scene_node_export = os.path.join(save_dir, "{}.max".format(name))
         path_json_meta = os.path.join(save_dir, "{}_metadata.json".format(name))
         path_json_mat = os.path.join(save_dir, "{}_mat_network.json".format(name))
 
-        LOGGER.debug("\tExporting MAX file: {}".format(path_max_scene))
+        LOGGER.debug("\tExporting MAX file: {}".format(path_max_scene_node_export))
 
         node.isSelected = True
-        mxs.saveNodes(list(mxs.selection), path_max_scene, quiet=True)
-        node_export_data["max"] = path_max_scene
+        mxs.saveNodes(list(mxs.selection), path_max_scene_node_export, quiet=True)
+        node_export_data["max"] = path_max_scene_node_export
         export_json_metadata(node, node_export_data, path_json_meta)
-        export_json_material(path_json_mat, get_all_nodes([node]))
+        try:
+            export_json_material(path_json_mat, get_all_nodes([node]))
+        except RuntimeError:
+            LOGGER.warning("Material JSON export failed for {}".format(node.name))
+
+            # current_file_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
+            #
+            # global MANIFEST_FAILED_PATH
+            # MANIFEST_FAILED_PATH = os.path.join(SEARCH_PATH, "__failed__.txt")
+            # with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
+            #     failed_processed_file.write("{}\n\t{}\n".format(scn_file_path, msg.replace("\n", "\n\t")))
 
         mxs.clearSelection()
 
@@ -1280,6 +1289,8 @@ def get_asset_metadata():
     top_nodes = list(mxs.rootScene[mxs.name("world")].object.children)
     poly_count, vert_count = get_total_poly_and_vert_count(top_nodes[0])
 
+    LOGGER.debug("poly_count: {}, vert_count: {}".format(poly_count, vert_count))
+
     scene_meta = {
         "bbox_units": bbox.get("units"),
         "bbox_depth": bbox.get("depth"),
@@ -1463,7 +1474,7 @@ def process_scene(scn_file_path, wrk_order):
         Args:
             max_file_path (str): Path to currently open MAX file.
         """
-        mssng_files = get_missing_files()
+        mssng_files = test_files_names([collect_scene_files()])
 
         if not mssng_files:
             LOGGER.info("No missing files.")
@@ -1478,38 +1489,31 @@ def process_scene(scn_file_path, wrk_order):
         mxs.sessionPaths.add(mxs.Name("map"), new_path)
         add_session_paths(max_file_path)
 
-    def find_missing_filepaths(max_file_path, missing_file_name):
+    def find_missing_filepaths(max_file_path, missing_file_path):
         """Searches for directory containing missing file.
 
         Args:
             max_file_path (str): Path to currently open MAX file.
-            missing_file_name (str): File whose path to find.
+            missing_file_path (str): File whose path to find.
 
         Returns:
             str|None: Found file path.
         """
+        missing_file_name = os.path.basename(missing_file_path)
         # Go one directory up from the current MAX file.
-        if missing_file_name.startswith(r"C:\Program Files\Autodesk\3ds Max"):
+        if missing_file_path.startswith(r"C:\Program Files\Autodesk\3ds Max"):
             dirname = mxs.GetDir(mxs.Name("maxroot"))
-            missing_file_name = os.path.basename(missing_file_name)
         else:
-            dirname = os.path.dirname(os.path.dirname(max_file_path))
+            shot_nm = os.path.basename(os.path.dirname(max_file_path))
+            dirname = os.path.join(os.path.dirname(SEARCH_PATH), shot_nm)
+
+        LOGGER.debug("Searching for missing file {} in: {}".format(missing_file_name, dirname))
+
         for r, d, f in os.walk(dirname):
-            if missing_file_name in f:
+            if missing_file_name.lower() in [fl.lower() for fl in f]:
                 return r
 
         return None
-
-    def get_missing_files():
-        """Returns list of filenames whose paths are missing.
-
-        Returns:
-            list: List of filenames whose paths are missing.
-        """
-        mf = []
-        mxs.enumerateFiles(mf.append, mxs.Name("missing"))
-        LOGGER.info(mf)
-        return test_files_names([collect_scene_files()])
 
     def remove_added_session_paths():
         """Removes any session paths that were added during processing."""
@@ -1549,7 +1553,7 @@ def process_scene(scn_file_path, wrk_order):
                 except UnicodeEncodeError:
                     non_unicode.append(f)
         if missing_paths:
-            LOGGER.warning("Missing the following paths:\n{}".format("\n".join(missing_paths)))
+            LOGGER.warning("Missing the following paths:\n\t{}".format("\n\t".join(missing_paths)))
 
         return missing_paths
 
@@ -1578,10 +1582,32 @@ def process_scene(scn_file_path, wrk_order):
     # Add missing file paths to Session Paths for textures, vrmeshes, etc.
     missing_files = add_session_paths(current_file_path)
 
+    # If files are still missing, don't process.
+    if missing_files:
+        shot_name = os.path.basename(os.path.dirname(current_file_path))
+        search_dir = os.path.join(os.path.dirname(SEARCH_PATH), shot_name)
+
+        msg = "Could not find missing files:\n\t{}".format("\n\t".join(missing_files))
+        msg = "{}\nSearched directory: {}".format(msg, search_dir)
+
+        LOGGER.warning(msg)
+
+        global MANIFEST_FAILED_PATH
+        MANIFEST_FAILED_PATH = os.path.join(SEARCH_PATH, "__failed__.txt")
+        with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
+            failed_processed_file.write("{}\n\t{}\n".format(scn_file_path, msg.replace("\n", "\n\t")))
+
+        # Reset scene
+        mxs.resetMaxFile(mxs.Name("noPrompt"))
+
+        # Remove added paths.
+        remove_added_session_paths()
+
+        return False
+
     # Rename image files that are non-unicode
-    if not missing_files:
-        LOGGER.info("Searching for non-ascii filenames...")
-        replace_non_ascii_paths()
+    LOGGER.info("Searching for non-ascii filenames...")
+    replace_non_ascii_paths()
 
     scene_file_collection = {}
 
@@ -2040,7 +2066,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet"
 
     # Specific scenes to process
     scene_file_paths = [
@@ -2048,7 +2074,9 @@ if __name__ == "__main__":
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2011.max",
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_003\003\AE34_003.max",
         # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_005\005\AE34_005.max",
-        r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2020.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\AE34_002\002\scenes\AE34_002_forestPack_2020.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_08-06-2021\Evermotion\ArchInteriors_17_06\ArchInteriors_17_06_2020.max",
+        # r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_09-06-2021\Evermotion\AE34_005\AE34_005_2020.max"
     ]
 
     # Silence V-Ray dialog for older versions.
