@@ -4,6 +4,7 @@ import sys
 
 import sgtk
 
+# TODO: Import these from monorepo properly.
 app_path = r"C:\Users\john.russell\Code\git_stuff\dreamview-studios-inc\DreamViewStudios\application\py"
 if app_path not in sys.path:
     sys.path.insert(0, app_path)
@@ -13,27 +14,24 @@ from common.sg_create_entities import create_asset
 
 logging.basicConfig(format="%(asctime)s %(message)s", level=logging.DEBUG)
 LOGGER = logging.getLogger()
-# parser = argparse.ArgumentParser()
-RENDERED_FLAG = "Omit"  # None or "" is off.
 SG_ENGINE = sgtk.platform.current_engine()
-SG = SG_ENGINE.shotgun
-# SG = shotgun
+sg = SG_ENGINE.shotgun
 WORK_ORDER = None
 
 
 def check_in_asset(asset_name, wrk_order, asset_files, renders=None):
-    """
+    """Check in given files.
 
     Args:
-        asset_name:
-        wrk_order:
-        asset_files:
-        renders:
+        asset_name (str): Name of asset.
+        wrk_order (dict): Work Order (CustomEntity17) Shotgun Entity to link to deliverable.
+        asset_files (list[str]): List of paths to files to check in.
+        renders (list[str]|None): List of path to rendered files to check in.
 
     Returns:
-        dict:
+        dict|None: FileCollection (CustomEntity16) Shotgun Entity of the checked in files.
     """
-    asset = SG.find_one(
+    asset = sg.find_one(
         "Asset",
         [["code", "is", asset_name]],
         ["code", "sg_company", "sg_published_files", "sg_asset_package_links"],
@@ -41,38 +39,29 @@ def check_in_asset(asset_name, wrk_order, asset_files, renders=None):
 
     if asset is None or get_task(asset.get("id")) is None:
         # Has the asset been ingested before?  If so, find the previous deliverable.
-        deliverable = SG.find_one("CustomEntity24", [["code", "contains", "{}_Hi Ingest Bulk".format(asset_name)]])
+        deliverable = sg.find_one("CustomEntity24", [["code", "contains", "{}_Hi Ingest Bulk".format(asset_name)]])
 
         # Create Asset
-        asset = create_asset(SG, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name,
-                             deliverable_type="Asset Ingest Bulk", deliverable=deliverable)
+        asset = create_asset(
+            sg, LOGGER, SG_ENGINE.context.project, wrk_order, asset_name, deliverable_type="Asset Ingest Bulk",
+            deliverable=deliverable)
 
-        asset = SG.find_one(
+        asset = sg.find_one(
             "Asset",
             [["id", "is", asset.get("id")]],
             ["code", "sg_company", "sg_published_files", "sg_asset_package_links"])
 
     # Make sure Company column is filled.
     if not asset.get("sg_company"):
-        SG.update("Asset", asset.get("id"), {"sg_company": [INGEST_COMPANY_ENTITY]})
+        sg.update("Asset", asset.get("id"), {"sg_company": [INGEST_COMPANY_ENTITY]})
 
     # Get Task from newly created Asset.
     task = get_task(asset.get("id"))
 
-    flag_rendered = "In Progress"
-    if RENDERED_FLAG:
-        flag_rendered = RENDERED_FLAG
-
     ############################################################################
 
     # CHECK-IN
-    return check_in(
-        task.get("id"),
-        rendered=renders,
-        # description=description,
-        pub_others=asset_files,
-        pub_exported=True,
-        flag_rendered=flag_rendered)
+    return check_in(task.get("id"), pub_others=asset_files, rendered=renders, flag_rendered="Pending Review")
 
 
 def get_task(asset_id):
@@ -84,7 +73,7 @@ def get_task(asset_id):
     Returns:
         dict|None: Shotgun Task dictionary.
     """
-    task = SG.find_one(
+    task = sg.find_one(
         "Task",
         [["entity.CustomEntity25.sg_deliverable.CustomEntity24.sg_link.Asset.id", "is", asset_id]],
         ["entity"])
@@ -92,14 +81,14 @@ def get_task(asset_id):
 
 
 def process_folder(foldr_pth, wrk_ordr):
-    """
+    """Search given folder for files and check them in.
 
     Args:
         foldr_pth (str): Path to folder to process.
         wrk_ordr (dict): Work Order (CustomEntity17) Shotgun Entity.
 
     Returns:
-
+        dict|None: FileCollection (CustomEntity16) Shotgun Entity of the checked in files.
     """
     asset_name = os.path.basename(foldr_pth)
 
@@ -129,13 +118,13 @@ if __name__ == "__main__":
 
     # Company
     INGEST_COMPANY_NAME = "CG Trader"  # Must match name in Shotgun
-    INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
+    INGEST_COMPANY_ENTITY = sg.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     search_folder_paths = [
         # r"Q:\Shared drives\DVS_StockAssets\CGTrader\832980_Gums Teeth and Tongue",
-        r"Q:\Shared drives\DVS_StockAssets\CGTrader\784661_New Apple TV Set",
+        # r"Q:\Shared drives\DVS_StockAssets\CGTrader\784661_New Apple TV Set",
         # r"Q:\Shared drives\DVS_StockAssets\CGTrader\811464_Carpet Natural Jute ZARA HOME",
-        # r"Q:\Shared drives\DVS_Production\Active\Suppliers\Sauder\429180 Wall\Reference\Props_and_Artwork\3120_CANDLE_27"
+        r"Q:\Shared drives\DVS_Production\Active\Suppliers\Sauder\429180 Wall\Reference\Props_and_Artwork\3120_CANDLE_27"
     ]
 
     if search_folder_paths:
