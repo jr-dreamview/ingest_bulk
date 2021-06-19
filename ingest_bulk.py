@@ -708,6 +708,11 @@ def export_node(node, name, nodes_hide_state, export_dir):
             # with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
             #     failed_processed_file.write("{}\n\t{}\n".format(scn_file_path, msg.replace("\n", "\n\t")))
 
+        global MANIFEST_ASSETS_PATH
+        MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
+        with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
+            manifest_assets_file.write("\t\t{}\n".format(name))
+
         mxs.clearSelection()
 
     # Reset rotation
@@ -1307,7 +1312,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-04"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-07"
     ORIGINAL_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
 
     # Specific scenes to process
