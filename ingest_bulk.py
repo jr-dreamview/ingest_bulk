@@ -683,6 +683,8 @@ def export_node(node, name, nodes_hide_state, export_dir):
     else:
         save_dir = os.path.join(export_dir, "assets")
 
+        name = get_clean_name(name, save_dir)
+
         # Make the export directory if it doesn't exist.
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
@@ -862,6 +864,8 @@ def get_asset_nodes():
     group_nodes = []
     for node in top_level_nodes:
         if mxs.classOf(node) == mxs.Dummy:
+            if "ignore" in node.name.lower():
+                continue
             group_nodes.append(node)
         else:
             geo_nodes.append(node)
