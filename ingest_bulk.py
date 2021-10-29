@@ -13,7 +13,6 @@ import re
 import shutil
 import string
 import sys
-import unicodedata
 
 # Third-party libraries
 import sgtk
@@ -84,8 +83,7 @@ EXCLUDE_NODE_CLASSES = [mxs.VRayProxy]
 INGEST_COMPANY_ENTITY = None
 INGEST_COMPANY_NAME = None
 # Don't search these directories for MAX files to process.
-IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN", "AI30_001", "downloaded",
-               "productized"]
+IGNORE_DIRS = ["AI45_009", "AE34_002", "AE34_003", "AE34_004", "AE34_005", "AM188_013", "AE34_009"]
 # Don't process MAX files with these words in the filename.
 IGNORE_IN_MAX_FILE_NAMES = ["corona", "__ingest_bulk__"]
 logging.basicConfig(level=logging.DEBUG)
@@ -169,27 +167,6 @@ def clean_scene_materials():
 
     # Don't render hidden objects
     mxs.rendHidden = False
-
-
-def clean_string(input_str):
-    """Cleans given string.
-
-    Args:
-        input_str (str): String to clean.
-
-    Returns:
-        str: Cleaned string.
-    """
-    if not isinstance(input_str, basestring):
-        input_str = str(input_str)
-    if isinstance(input_str, str):
-        input_str = input_str.decode("utf8", errors="ignore")
-
-    nkfd_form = unicodedata.normalize("NFKD", input_str)
-    s = u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
-    s = " ".join(s.encode(errors="ignore").decode().split())
-
-    return s
 
 
 def collect_scene_files():
@@ -683,8 +660,6 @@ def export_node(node, name, nodes_hide_state, export_dir):
     else:
         save_dir = os.path.join(export_dir, "assets")
 
-        name = get_clean_name(name, save_dir)
-
         # Make the export directory if it doesn't exist.
         if not os.path.isdir(save_dir):
             os.makedirs(save_dir)
@@ -702,13 +677,6 @@ def export_node(node, name, nodes_hide_state, export_dir):
             export_json_material(path_json_mat, get_all_nodes([node]))
         except RuntimeError:
             LOGGER.warning("Material JSON export failed for {}".format(node.name))
-
-            # current_file_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
-            #
-            # global MANIFEST_FAILED_PATH
-            # MANIFEST_FAILED_PATH = os.path.join(SEARCH_PATH, "__failed__.txt")
-            # with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
-            #     failed_processed_file.write("{}\n\t{}\n".format(scn_file_path, msg.replace("\n", "\n\t")))
 
         global MANIFEST_ASSETS_PATH
         MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
@@ -822,7 +790,7 @@ def export_nodes(groups_to_export, export_dir):
 
     mxs.redrawViews()
 
-    LOGGER.info("\n{} nodes exported.".format(num_nodes))
+    LOGGER.info("{} nodes exported.".format(num_nodes))
 
     return nodes_data_dict
 
@@ -854,25 +822,33 @@ def get_asset_nodes():
     If multiple nodes have the same geometry and textures, only the first node found will be returned.
 
     Returns:
-       list[pymxs.MXSWrapperBase]: Nodes that represent assets to ingest.
+       tuple[list[pymxs.MXSWrapperBase], list[pymxs.MXSWrapperBase]]: Nodes that represent assets to ingest.
     """
     top_level_nodes = sorted(
         [c for c in list(mxs.rootScene[mxs.name("world")].object.children) if include_node(c)],
         key=lambda x: sort_key_alphanum(x.Name))
 
-    geo_nodes = []
-    group_nodes = []
-    for node in top_level_nodes:
-        if mxs.classOf(node) == mxs.Dummy:
-            if "ignore" in node.name.lower():
+    group_nodes = [
+        node for node in top_level_nodes if mxs.classOf(node) == mxs.Dummy and "ignore" not in node.name.lower()]
+
+    duplicates = []
+
+    for i in range(len(group_nodes) - 1):
+        node1 = group_nodes[i]
+        if node1 in duplicates:
+            continue
+        for j in range(i + 1, len(group_nodes)):
+            node2 = group_nodes[j]
+            if node2 in duplicates:
                 continue
-            group_nodes.append(node)
-        else:
-            geo_nodes.append(node)
+            if node1.name == node2.name:
+                if node1 not in duplicates:
+                    duplicates.append(node1)
+                duplicates.append(node2)
 
     LOGGER.debug("Number of Group Nodes found: {}".format(len(group_nodes)))
 
-    return group_nodes
+    return group_nodes, duplicates
 
 
 def include_node(node):
@@ -1064,9 +1040,9 @@ def process_scene(scn_file_path):
     # Open the scene file in Quiet mode.
     mxs.loadMaxFile(scn_file_path, useFileUnits=True, quiet=True)
 
-    scene_name = mxs.getFilenameFile(mxs.maxFileName)
+    shot_name = os.path.basename(os.path.abspath(mxs.maxFilePath))
 
-    scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
+    scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", shot_name)
 
     # Check IO gamma.
     check_file_io_gamma()
@@ -1110,7 +1086,28 @@ def process_scene(scn_file_path):
     replace_non_ascii_paths()
 
     # Get the nodes to check in.
-    asset_nodes = get_asset_nodes()
+    asset_nodes, duplicate_nodes = get_asset_nodes()
+
+    if duplicate_nodes:
+        dup_names = list(set([node.name for node in duplicate_nodes]))
+
+        LOGGER.warning("Duplicate node names found.")
+
+        global MANIFEST_FAILED_PATH
+        MANIFEST_FAILED_PATH = os.path.join(SEARCH_PATH, "__failed__.txt")
+        with open(MANIFEST_FAILED_PATH, "a") as failed_processed_file:
+            failed_processed_file.write("{}\n".format(scn_file_path))
+            failed_processed_file.write("\t{} nodes have duplicate names:\n".format(len(duplicate_nodes)))
+            for name in dup_names:
+                failed_processed_file.write("\t\t{}\n".format(name))
+
+        # Reset scene
+        mxs.resetMaxFile(mxs.Name("noPrompt"))
+
+        # Remove added paths.
+        remove_added_session_paths()
+
+        return False
 
     global MANIFEST_ASSETS_PATH
     MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
@@ -1190,7 +1187,7 @@ def search_and_process(search_path):
     global MANIFEST_MOST_RECENT
     global MANIFEST_FAILED_PATH
     MANIFEST_FILE_PATH = os.path.join(search_path, "__manifest__.txt")
-    MANIFEST_MOST_RECENT = os.path.join(search_path, "__current__.txt")
+    MANIFEST_MOST_RECENT = os.path.join(search_path, "__recent_done__.txt")
     MANIFEST_FAILED_PATH = os.path.join(search_path, "__failed__.txt")
 
     # If the process was interrupted, read the file path in current file and
@@ -1316,7 +1313,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-07"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June"
     ORIGINAL_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
 
     # Specific scenes to process
@@ -1335,6 +1332,8 @@ if __name__ == "__main__":
 
     curr_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
 
+    ###########
+
     # If a scene is already open, process it.
     if curr_path:
         success = process_scene(curr_path)
@@ -1346,9 +1345,12 @@ if __name__ == "__main__":
     else:
         search_and_process(SEARCH_PATH)
 
-    # Reset scene.
-    mxs.resetMaxFile(mxs.Name("noPrompt"))
+    ##########
 
-    LOGGER.info("== Ingest Complete ==")
+    if not curr_path:
+        # Reset scene.
+        mxs.resetMaxFile(mxs.Name("noPrompt"))
+
+        LOGGER.info("== Ingest Complete ==")
 
     # mxs.quitMax(mxs.Name("noprompt"))
