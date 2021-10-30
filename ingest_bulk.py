@@ -1042,7 +1042,7 @@ def process_scene(scn_file_path):
 
     shot_name = os.path.basename(os.path.abspath(mxs.maxFilePath))
 
-    scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", shot_name)
+    scene_ingest_dir = os.path.join(OUTPUT_PATH, "__ingest_bulk__", shot_name)
 
     # Check IO gamma.
     check_file_io_gamma()
@@ -1313,8 +1313,9 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-04"
     ORIGINAL_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
+    OUTPUT_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet"
 
     # Specific scenes to process
     scene_file_paths = [
