@@ -1313,7 +1313,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-04"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-09"
     ORIGINAL_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
     OUTPUT_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet"
 
