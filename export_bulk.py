@@ -83,7 +83,7 @@ EXCLUDE_NODE_CLASSES = [mxs.VRayProxy]
 INGEST_COMPANY_ENTITY = None
 INGEST_COMPANY_NAME = None
 # Don't search these directories for MAX files to process.
-IGNORE_DIRS = ["AI45_009", "AE34_002", "AE34_003", "AE34_004", "AE34_005", "AM188_013", "AE34_009"]
+IGNORE_DIRS = ["AI45_009", "AE34_002", "AE34_003", "AE34_004", "AE34_005", "AE34_006", "AM188_013", "AE34_009"]
 # Don't process MAX files with these words in the filename.
 IGNORE_IN_MAX_FILE_NAMES = ["corona", "__ingest_bulk__"]
 logging.basicConfig(level=logging.DEBUG)
@@ -1261,6 +1261,9 @@ def search_and_process(search_path):
     LOGGER.info("{} current MAX scenes succeeded.".format(cur_success_count))
     LOGGER.info("Manifest written: {}".format(MANIFEST_FILE_PATH))
 
+    if os.path.exists(MANIFEST_MOST_RECENT):
+        os.remove(MANIFEST_MOST_RECENT)
+
 
 def sort_key_alphanum(s, case_sensitive=False):
     """Turn a string into a list of string and number chunks.
@@ -1313,7 +1316,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\June\AD_2021-06-09"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\July\AD_07-07-2021"
     ORIGINAL_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
     OUTPUT_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet"
 
