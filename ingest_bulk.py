@@ -662,7 +662,10 @@ def search_and_process(search_path, wrk_order, start_num=None):
         ####################################################################
 
         # Process the MAX file.
-        process_success = process_scene(max_file, wrk_order)
+        try:
+            process_success = process_scene(max_file, wrk_order)
+        except:
+            process_success = None
 
         ###################################################################
 
