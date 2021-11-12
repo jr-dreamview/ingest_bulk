@@ -5,10 +5,13 @@ __author__ = "John Russell <john.russell@dreamview.com>"
 
 
 # Standard libraries
+import json
 import logging
 import os
 import re
+import shutil
 import sys
+from tempfile import gettempdir
 
 # Third-party libraries
 import sgtk
@@ -57,70 +60,38 @@ script_folder = get_tool_dir("Check_In*")
 if script_folder not in sys.path:
     sys.path.insert(0, script_folder)
 from check_in_out import check_in
-from dvs_max_lib.meta import Meta
-
-# Import Check-out module
-script_folder = get_tool_dir("Check_Out*")
-if script_folder not in sys.path:
-    sys.path.insert(0, script_folder)
-from check_in_out import check_out
-
-# Import QC Batch Tool module
-script_folder = get_tool_dir("QC_Batch_Tool")
-if script_folder not in sys.path:
-    sys.path.insert(0, script_folder)
-from qc_batch_tool import get_qc_tool
 
 
 # GLOBALS
 
 # Debug globals
-DEBUG_ASSET_EXPORT_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_PRINT = False
 DEBUG_SCENE_COUNT_LIMIT = 0  # 0 exports all.
 DEBUG_SKIP_ASSET_CHECKIN = False
 DEBUG_SKIP_EXPORT_MAX = False
-DEBUG_SKIP_MATERIAL_JSON = False
 DEBUG_SKIP_QC = False
 DEBUG_SKIP_QC_FARM = False
-DEBUG_SKIP_SCENE_CHECKIN = False
+DEBUG_START_NUM = None  # None starts at the beginning.
 
 # Globals
-DEFAULT_PERSP_VIEW_MATRIX = mxs.Matrix3(
-    mxs.Point3(0.707107, 0.353553, -0.612372),
-    mxs.Point3(-0.707107, 0.353553, -0.612372),
-    mxs.Point3(0, 0.866025, 0.5),
-    mxs.Point3(0, 0, -250))
-# Ignore these classes of nodes when finding nodes to ingest.
-EXCLUDE_NODE_CLASSES = [mxs.VRayProxy]
 INGEST_COMPANY_ENTITY = None
 INGEST_COMPANY_NAME = None
-# Don't search these directories for MAX files to process.
-IGNORE_DIRS = ["AE34_003", "AE34_006", "AE34_007", "AE34_008", "AI46_006_BROKEN", "AI30_001", "downloaded",
-               "productized"]
-# Don't process MAX files with these words in the filename.
-IGNORE_IN_MAX_FILE_NAMES = ["corona"]
 logging.basicConfig()
 LOGGER = logging.getLogger()
 MANIFEST_ASSETS_PATH = None
 MANIFEST_FAILED_PATH = None
 MANIFEST_FILE_PATH = None
 MANIFEST_MOST_RECENT = None  # Path to "current" manifest file.
-MAX_FILE_OLDEST = False  # True: Ingest the oldest MAX file; False: newest.
-ORIGIN_POSITION = mxs.Point3(0, 0, 0)
-ORIGIN_TRANSFORM_MATRIX = mxs.Matrix3(1)
 QC_EXPORT = True  # True: Export vrscenes; False: render QC passes in place.
 # Import these images to render QC vrscenes.
-qc_tool_folder = get_tool_dir("QC-Tool")
-QC_IMAGES = [
-    # os.path.join(qc_tool_folder, r"QC-Tool\Textures\UV_Coded.jpg")
-]
+# qc_tool_folder = get_tool_dir("QC-Tool")
+# QC_IMAGES = [
+#     os.path.join(qc_tool_folder, r"QC-Tool\Textures\UV_Coded.jpg")
+# ]
 RENDERED_FLAG = "Omit"  # None or "" is off.
 SEARCH_PATH = None  # Current dir path used to find 3DS MAX files to ingest.
-SESSION_PATH_START_COUNT = mxs.sessionPaths.count(mxs.Name("map"))
 SG_ENGINE = sgtk.platform.current_engine()
 SG = SG_ENGINE.shotgun
-VIEW_PERSP_USER = mxs.Name("view_persp_user")  # Viewport type "Perspective User" enum.
 
 
 def check_file_io_gamma():
@@ -141,8 +112,7 @@ def check_file_io_gamma():
     return result
 
 
-def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="", qc_renders=None, pub_others=None,
-                   full_scene=False):
+def check_in_asset(asset_file_path, wrk_order, asset_name, description, metadata, qc_renders=None, pub_others=None):
     """Checks-in supplied MAX file as an asset.
 
     Args:
@@ -150,43 +120,26 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
         wrk_order (dict): Work order Shotgun dictionary.
         asset_name (str): Name of asset to check-in.
         description (str): Description of asset for check-in.
-        matrix (str): String representation of transform matrix.
+        metadata (dict): Object metadata.
         qc_renders (list[str]|None): List of paths to QC renders.
         pub_others (list[str]|None): List of paths to QC vrscene files.
-        full_scene (bool): Is the MAX file the full scene?
 
     Returns:
         dict|None: Shotgun File Collection (CustomEntity16) dictionary.
     """
-    # If full_scene, assume the scene is already open.
-    if not full_scene:
-        # Open file
-        print("\tOpening {}".format(asset_file_path))
-        mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
+    # Open file
+    print("\tOpening {}".format(asset_file_path))
+    mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
 
-        # Add images used by QC so vrscenes will render.
-        if pub_others is None:
-            pub_others = []
-        pub_others.extend(QC_IMAGES)
+    # # Add images used by QC so vrscenes will render.
+    # if pub_others is None:
+    #     pub_others = []
+    # pub_others.extend(QC_IMAGES)
 
-    if DEBUG_SKIP_MATERIAL_JSON or full_scene:
-        print("\tSkipping Material Network JSON for {}".format(asset_name))
-    else:
-        print("\tExporting Material Network JSON for {}".format(asset_name))
-        json_mat_path = None
-        try_count = 0
-        while try_count < 3:
-            try:
-                json_mat_path = export_material_json(asset_file_path)
-                print("\tSuccessfully exported material json export.")
-                break
-            except Exception:
-                print("\tError occurred during material json export.")
-                try_count += 1
-        if json_mat_path is not None:
-            if pub_others is None:
-                pub_others = []
-            pub_others.append(json_mat_path)
+    json_mat_path = asset_file_path.replace(".max", "_mat_network.json")
+    if pub_others is None:
+        pub_others = []
+    pub_others.append(json_mat_path)
 
     # Has the asset been ingested before?
     asset = SG.find_one(
@@ -230,7 +183,6 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
         rendered=qc_renders,
         description=description,
         pub_others=pub_others,
-        pub_exported=not full_scene,
         flag_rendered=flag_rendered
     )
 
@@ -242,125 +194,41 @@ def check_in_asset(asset_file_path, wrk_order, asset_name, description, matrix="
         return None
 
     # Update published files with matrix transform data.
-    if not full_scene:
-        for pub_file in file_collection.get("sg_published_file_entity_links"):
-            pub_file = SG.find_one(
-                "PublishedFile",
-                [["id", "is", pub_file.get("id")]],
-                ["code", "sg_context", "sg_source_transform_matrix"])
+    for pub_file in file_collection.get("sg_published_file_entity_links"):
+        pub_file = SG.find_one(
+            "PublishedFile",
+            [["id", "is", pub_file.get("id")]],
+            ["code", "sg_context", "sg_source_transform_matrix"])
 
-            if pub_file.get("sg_context") in ["geo_abc_exported", "geo_max"]:
-                SG.update("PublishedFile", pub_file.get("id"), {"sg_source_transform_matrix": matrix})
+        if pub_file.get("sg_context") in ["geo_abc_exported", "geo_max"]:
+            SG.update(
+                "PublishedFile", pub_file.get("id"), {"sg_source_transform_matrix": metadata.get("original_t_matrix")})
 
-        # Get metadata for asset.
-        asset_meta_data = get_asset_metadata()
+    file_collection = SG.update(
+        file_collection.get("type"),
+        file_collection.get("id"),
+        {
+            "sg_bbox_width": metadata.get("bbox_width"),
+            "sg_bbox_height": metadata.get("bbox_height"),
+            "sg_bbox_depth": metadata.get("bbox_depth"),
+            "sg_bbox_units": metadata.get("bbox_units"),
+            "sg_mdl_polygon_count": metadata.get("poly_count"),
+            "sg_mdl_vertex_count": metadata.get("vert_count"),
+            "sg_mtl_bitmap_count": metadata.get("mtl_bitmap_count"),
+            "sg_mtl_material_count": metadata.get("mtl_material_count"),
+            "sg_mtl_roughness_count": metadata.get("mtl_roughness_count"),
+            "sg_mtl_uv_tiles_count": metadata.get("mtl_uv_tiles_count"),
+        }
+    )
 
-        file_collection = SG.update(
-            file_collection.get("type"),
-            file_collection.get("id"),
-            {
-                "sg_bbox_width": asset_meta_data.get("bbox_width"),
-                "sg_bbox_height": asset_meta_data.get("bbox_height"),
-                "sg_bbox_depth": asset_meta_data.get("bbox_depth"),
-                "sg_bbox_units": asset_meta_data.get("bbox_units"),
-                "sg_mdl_polygon_count": asset_meta_data.get("poly_count"),
-                "sg_mdl_vertex_count": asset_meta_data.get("vert_count"),
-                "sg_mtl_bitmap_count": asset_meta_data.get("mtl_bitmap_count"),
-                "sg_mtl_material_count": asset_meta_data.get("mtl_material_count"),
-                "sg_mtl_roughness_count": asset_meta_data.get("mtl_roughness_count"),
-                "sg_mtl_uv_tiles_count": asset_meta_data.get("mtl_uv_tiles_count"),
-            }
-        )
+    # Submit vrscenes to farm.
+    if not DEBUG_SKIP_QC_FARM and not DEBUG_SKIP_QC and QC_EXPORT:
+        jobs = qc_vrscene_farm_submit(task, file_collection)
 
-        # Submit vrscenes to farm.
-        if not DEBUG_SKIP_QC_FARM and not DEBUG_SKIP_QC and QC_EXPORT:
-            jobs = qc_vrscene_farm_submit(task, file_collection)
-
-            if jobs:
-                print("Farm Jobs submitted for {}:".format(asset_name))
-                for job in jobs:
-                    print("\t{}".format(job.get("code")))
-
-    return file_collection
-
-
-def check_in_scene(current_file_path, scn_file_path, wrk_order):
-    """Export and check-in full MAX scene.
-
-    Args:
-        current_file_path (str): Path to scene file.
-        scn_file_path (str): Path to original scene file.
-        wrk_order (dict): Shotgun work order.
-
-    Returns:
-        dict: Shotgun File Collection (CustomEntity16) dictionary.
-    """
-    def find_pre_rendered_images(current_path):
-        """Find prerendered images from original MAX scene file path.
-
-        Args:
-            current_path (str): Original MAX scene file path.
-
-        Returns:
-            list[str]|None: List of prerendered images.
-        """
-        if current_path == SEARCH_PATH:
-            return None
-        if "images" in os.listdir(current_path):
-            images_path = os.path.join(current_path, "images")
-            return [os.path.join(images_path, f) for f in os.listdir(images_path)]
-        return find_pre_rendered_images(os.path.dirname(current_path))
-
-    ##########
-
-    scene_name = mxs.getFilenameFile(mxs.maxFileName)
-
-    scene_description = (
-        "Checked-in from 3DS MAX.\n"
-        "\n"
-        "Full scene.\n"
-        "\n"
-        "Original File:\n"
-        "{}".format(current_file_path))
-
-    scene_checkin_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
-
-    # Make the export directory if it doesn't exist.
-    if not os.path.isdir(scene_checkin_dir):
-        os.makedirs(scene_checkin_dir)
-
-    scene_checkin_path = os.path.join(scene_checkin_dir, mxs.maxFileName)
-
-    mxs.saveMaxFile(scene_checkin_path, clearNeedSaveFlag=True, useNewFile=True, quiet=True)
-
-    ############################################################################
-
-    # Check-in the scene.
-    file_collection = check_in_asset(
-        scene_checkin_path,
-        wrk_order,
-        scene_name,
-        scene_description,
-        qc_renders=find_pre_rendered_images(os.path.dirname(scn_file_path)),
-        full_scene=True)
-
-    ############################################################################
-
-    mxs.resetMaxFile(mxs.Name("noPrompt"))
-
-    if file_collection is None:
-        print("Check-in scene failed.")
-        return None
-
-    asset = file_collection.get("asset_sg_asset_package_links_assets")[0]
-    task = get_task(asset.get("id"))
-
-    print("Check-Out Scene")
-    result = check_out(task.get("id"))
-    print("Check-Out Result")
-    print(result)
-
-    replace_non_ascii_paths()
+        if jobs:
+            print("Farm Jobs submitted for {}:".format(asset_name))
+            for job in jobs:
+                print("\t{}".format(job.get("code")))
 
     return file_collection
 
@@ -398,80 +266,28 @@ def export_vrscene_file(suffix=""):
     return result
 
 
-def get_all_nodes(nodes=None):
-    """Returns all descendants of a list of nodes.
-    If None is provided, it will return all nodes in the scene.
-
-    Args:
-        nodes (list[pymxs.MXSWrapperBase]|None): Nodes from which to find descendants.
+def get_qc_tool():
+    """Retrieve the QC Tool.
 
     Returns:
-        list[pymxs.MXSWrapperBase]: List of all nodes.
+        pymxs.MXSWrapperBase|None: QC Tool.
     """
-    all_nodes_list = []
-    if nodes is None:
-        nodes = list(mxs.rootScene[mxs.name("world")].object.children)
-    for node in nodes:
-        if node.children.count:
-            all_nodes_list.extend(get_all_nodes(list(node.children)))
-        all_nodes_list.append(node)
-
-    return sorted(all_nodes_list, key=lambda n: sort_key_alphanum(n.Name))
-
-
-def get_asset_nodes(nodes_text_file):
-    """Get all nodes that represent assets to be ingested.
-    If multiple nodes have the same geometry and textures, only the first node found will be returned.
-
-    Args:
-       nodes_text_file (str): Path to text file to which to write all node names.
-
-    Returns:
-       dict[str, list[pymxs.MXSWrapperBase]]: Nodes that represent assets to ingest.
-    """
-    top_level_nodes = sorted(
-        [c for c in list(mxs.rootScene[mxs.name("world")].object.children) if include_node(c)],
-        key=lambda x: sort_key_alphanum(x.Name))
-
-    geo_nodes = []
-    group_nodes = []
-    for node in top_level_nodes:
-        if mxs.classOf(node) == mxs.Dummy:
-            group_nodes.append(node)
-        else:
-            geo_nodes.append(node)
-
-    if DEBUG_PRINT:
-        print("Number of Geo Nodes found: {}".format(len(geo_nodes)))
-        print("Number of Group Nodes found: {}".format(len(group_nodes)))
-
-    matched_geo_nodes = find_duplicate_nodes(geo_nodes)
-    matched_group_nodes = find_duplicate_nodes(group_nodes)
-
-    matched_nodes = matched_geo_nodes.copy()
-
-    # Merge geo nodes and group nodes into the group dictionary.
-    for grp_name in matched_group_nodes:
-        if grp_name in matched_geo_nodes:
-            matched_nodes[grp_name].extend(matched_group_nodes[grp_name])
-        else:
-            matched_nodes[grp_name] = matched_group_nodes.get(grp_name)
-
-    # Print the full list of organized nodes.
-    nodes_text_file_dir = os.path.dirname(nodes_text_file)
-    if not os.path.exists(nodes_text_file_dir):
-        os.makedirs(nodes_text_file_dir)
-
-    with open(nodes_text_file, "w") as nodes_file:
-        # Print the full list of organized nodes.
-        nodes_file.write("Matched nodes:\n")
-
-        for grp_name in sorted(matched_nodes.keys(), key=lambda x: sort_key_alphanum(x)):
-            nodes_file.write("{}\n".format(grp_name))
-            for node in sorted(matched_nodes.get(grp_name), key=lambda x: sort_key_alphanum(x.Name)):
-                nodes_file.write("\t{}\n".format(node.Name))
-
-    return matched_nodes
+    qc_tool = None
+    toolkit_ui_path = mxs.execute("global DreamView_Scripts_ScriptsPath; DreamView_Scripts_ScriptsPath")
+    if not toolkit_ui_path:
+        print("3ds Max Toolkit not found!")
+        return qc_tool
+    toolkit_ui_path = os.path.dirname(toolkit_ui_path)
+    if not os.path.exists(toolkit_ui_path):
+        print("3ds Max Toolkit folder not found!")
+        return qc_tool
+    qc_tool_struct_path = os.path.join(toolkit_ui_path, "QC-Tool/QC-Tool/_Core/QC-Tool_Struct.ms")
+    if not os.path.exists(qc_tool_struct_path):
+        print("QC-Tool struct file not found!")
+        return qc_tool
+    qc_tool_struct = mxs.fileIn(os.path.normpath(qc_tool_struct_path))
+    qc_tool = qc_tool_struct()
+    return qc_tool
 
 
 def get_task(asset_id):
@@ -497,6 +313,39 @@ def get_task(asset_id):
     return task
 
 
+def max_walk(dir_to_search):
+    """Generator that walks through a directory structure and yields MAX files.
+
+    Args:
+        dir_to_search (str): Current directory being searched.
+
+    Yields:
+        list[str]: List of paths to MAX files found in directory.
+    """
+    names = sorted(os.listdir(dir_to_search))
+
+    dirs, max_files = [], []
+
+    for name in names:
+        if os.path.isdir(os.path.join(dir_to_search, name)):
+            dirs.append(name)
+        else:
+            if name.lower().endswith(".max"):
+                max_files.append(name)
+
+    # If MAX files are found...
+    if max_files:
+        yield [os.path.join(dir_to_search, f) for f in max_files]
+
+    # If no MAX files are found, keep digging...
+    else:
+        for name in dirs:
+            new_path = os.path.join(dir_to_search, name)
+            if not os.path.islink(new_path):
+                for x in max_walk(new_path):
+                    yield x
+
+
 def process_scene(scn_file_path, wrk_order):
     """Process the scene file, checking in assets found in the scene.
 
@@ -507,232 +356,78 @@ def process_scene(scn_file_path, wrk_order):
     Returns:
         bool: Did the scene process successfully?
     """
-    def add_session_paths(max_file_path):
-        """Add found paths to session paths so images can be found.
-
-        Args:
-            max_file_path (str): Path to currently open MAX file.
-        """
-        mssng_files = get_missing_files()
-
-        if mssng_files:
-            new_path = find_missing_filepaths(max_file_path, mssng_files[0])
-
-            if new_path:
-                print("Adding path {}".format(new_path))
-                mxs.sessionPaths.add(mxs.Name("map"), new_path)
-
-                add_session_paths(max_file_path)
-            else:
-                return mssng_files
-        else:
-            print("No missing files.")
-            return []
-
-    def find_missing_filepaths(max_file_path, missing_file_name):
-        """Searches for directory containing missing file.
-
-        Args:
-            max_file_path (str): Path to currently open MAX file.
-            missing_file_name (str): File whose path to find.
-
-        Returns:
-            str|None: Found file path.
-        """
-        # Go one directory up from the current MAX file.
-        if missing_file_name.startswith(r"C:\Program Files\Autodesk\3ds Max"):
-            dirname = mxs.GetDir(mxs.Name("maxroot"))
-            missing_file_name = os.path.basename(missing_file_name)
-        else:
-            dirname = os.path.dirname(os.path.dirname(max_file_path))
-        for r, d, f in os.walk(dirname):
-            if missing_file_name in f:
-                return r
-
-        return None
-
-    def get_missing_files():
-        """Returns list of filenames whose paths are missing.
-
-        Returns:
-            list: List of filenames whose paths are missing.
-        """
-        mf = []
-        mxs.enumerateFiles(mf.append, mxs.Name("missing"))
-        print(mf)
-        return test_files_names([collect_scene_files()])
-
-    def remove_added_session_paths():
-        """Removes any session paths that were added during processing."""
-        session_paths_count = mxs.sessionPaths.count(mxs.Name("map"))
-        if session_paths_count > SESSION_PATH_START_COUNT:
-            for i in reversed(range(SESSION_PATH_START_COUNT + 1, session_paths_count + 1)):
-                print("Removing path {}".format(mxs.sessionPaths.get(mxs.Name("map"), i)))
-                mxs.sessionPaths.delete(mxs.Name("map"), i)
-
-    def test_files_names(file_collections):
-        """Tests each name for non-ascii characters.
-
-        Args:
-            file_collections: File path node data.
-                ::
-                {
-                     file_path: {
-                                     node_object: {
-                                                       "path_attr": [path_property]
-                                                  }
-                                }
-                }
-
-        Returns:
-            list[str]: Path that are missing.
-        """
-        missing_paths = []
-        non_unicode = []
-        for file_list in file_collections:
-            if not file_list:
-                continue
-            for f in file_list:
-                if not os.path.exists(f):
-                    missing_paths.append(f)
-                try:
-                    unicode(f).encode("ascii")
-                except UnicodeEncodeError:
-                    non_unicode.append(f)
-        if missing_paths:
-            print("Missing the following paths:\n{}".format("\n".join(missing_paths)))
-
-        return missing_paths
-
-    ##################################################
-
     print("Opening scene: {}".format(os.path.basename(scn_file_path)))
 
     # Open the scene file in Quiet mode.
     mxs.loadMaxFile(scn_file_path, useFileUnits=True, quiet=True)
 
-    scene_name = mxs.getFilenameFile(mxs.maxFileName)
+    json_path = scn_file_path.replace(".max", "_metadata.json")
 
-    scene_ingest_dir = os.path.join(SEARCH_PATH, "__ingest_bulk__", scene_name)
+    shot_name = scn_file_path.split("__ingest_bulk__")[1].split("\\")[1]
+
+    with open(json_path) as json_file:
+        meta_data = json.load(json_file)
 
     # Check IO gamma.
     check_file_io_gamma()
 
-    # Remove unused textures.
-    clean_scene_materials()
-
     # Refresh bitmaps...
     mxs.redrawViews()
 
-    current_file_path = os.path.join(mxs.maxFilePath, mxs.maxFileName)
-
-    # Add missing file paths to Session Paths for textures, vrmeshes, etc.
-    missing_files = add_session_paths(current_file_path)
-
-    # Rename image files that are non-unicode
-    if not missing_files:
-        print("Searching for non-ascii filenames...")
-        replace_non_ascii_paths()
-
-    scene_file_collection = {}
-
-    if not DEBUG_SKIP_SCENE_CHECKIN:
-        if missing_files:
-            print("Missing the following files:\n{}".format("\n".join(missing_files)))
-            print("The scene {} is missing files.  Skipping scene.".format(os.path.basename(scn_file_path)))
-
-            # Reset scene
-            mxs.resetMaxFile(mxs.Name("noPrompt"))
-
-            # Remove added paths.
-            remove_added_session_paths()
-
-            return False
-        else:
-            print("No missing files!")
-
-            # Check in the whole scene.
-            ####################################################################
-
-            print("Check-in scene {}.".format(os.path.basename(scn_file_path)))
-            scene_file_collection = check_in_scene(current_file_path, scn_file_path, wrk_order)
-
-            ####################################################################
-
-    nodes_text_file = os.path.join(scene_ingest_dir, "{}_nodes.txt".format(scene_name))
-
     # Get the nodes to check in.
-    asset_nodes = get_asset_nodes(nodes_text_file)
-
-    # Export the nodes to their own MAX file.
-    asset_data_dict = export_nodes(asset_nodes, scene_ingest_dir)
+    asset_node = list(mxs.rootScene[mxs.name('world')].object.children)[0]
+    asset_name = "{}_{}".format(shot_name, asset_node.Name)
 
     global MANIFEST_ASSETS_PATH
     MANIFEST_ASSETS_PATH = os.path.join(SEARCH_PATH, "__assets__.txt")
     with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
         manifest_assets_file.write("{}\n".format(scn_file_path))
-        manifest_assets_file.write("\t{} nodes:\n".format(len(asset_data_dict)))
 
     # If DEBUG_SKIP_EXPORT_MAX is True, there is no MAX file to QC or
     # check in.
     if DEBUG_SKIP_EXPORT_MAX:
-        print("\tSkipping QC & check-in for all assets in {}".format(current_file_path))
-        return False
-
-    if scene_file_collection is None:
-        print("\tScene check-in failed.  Skipping QC and check-in for all assets in {}".format(current_file_path))
+        print("\tSkipping QC & check-in for all assets in {}".format(scn_file_path))
         return False
 
     # QC and check-in all the assets found.
-    print("QC and Check-in assets for scene:\n{}".format(current_file_path))
-    for asset_name in sorted(asset_data_dict.keys(), key=lambda x: sort_key_alphanum(x)):
-        asset_file_path = asset_data_dict[asset_name].get("max")
-        original_node_name = asset_data_dict[asset_name].get("original_node")
-        original_t_matrix = asset_data_dict[asset_name].get("original_t_matrix")
+    print("QC and Check-in assets for scene:\n{}".format(scn_file_path))
+    asset_file_path = scn_file_path
+    original_node_name = asset_node.Name
+    original_max_path = meta_data.get("original_max_file")
+    qc_tool_exports_dir = None
 
-        qc_renders = None
-        pub_others = None
+    qc_renders = None
+    vr_scenes = None
 
-        # QC asset
-        if DEBUG_SKIP_QC:
-            if DEBUG_PRINT:
-                print("\tSkipping QC for {}".format(asset_name))
+    # QC asset
+    if DEBUG_SKIP_QC:
+        if DEBUG_PRINT:
+            print("\tSkipping QC for {}".format(asset_name))
+    else:
+        mxs.clearSelection()
+
+        # Make QC directories.
+        max_file_name = os.path.basename(asset_file_path).rsplit(".", 1)[0]
+        qc_tool_exports_dir = os.path.join(gettempdir(), "__ingest_bulk_QC__", shot_name, "{}".format(max_file_name))
+        if not os.path.isdir(qc_tool_exports_dir):
+            os.makedirs(qc_tool_exports_dir)
+        qc_max_file_path = "{}_QC.max".format(os.path.join(qc_tool_exports_dir, max_file_name))
+
+        mxs.saveMaxFile(qc_max_file_path, clearNeedSaveFlag=True, useNewFile=True, quiet=True)
+
+        # QC EXPORT
+        if QC_EXPORT:
+            vr_scenes = qc_vrscene_export(qc_max_file_path)
+
+        # QC RENDER
         else:
-            # Open file
-            print("\tOpening {}".format(asset_file_path))
-            mxs.loadMaxFile(asset_file_path, useFileUnits=True, quiet=True)
+            qc_renders = qc_render([qc_max_file_path], "Lookdev", ".PNG", os.path.dirname(qc_max_file_path))
 
-            # Put everything in a group.
-            nodes = [c for c in list(mxs.rootScene[mxs.name("world")].object.children)]
-            for node in nodes:
-                node.isSelected = True
-
-            mxs.group(list(mxs.selection), name="__QC__")
-            mxs.clearSelection()
-
-            # Make QC directories.
-            max_file_name = os.path.basename(asset_file_path).rsplit(".", 1)[0]
-            qc_tool_exports_dir = "{}_QC".format(asset_file_path.rsplit(".", 1)[0])
-            if not os.path.isdir(qc_tool_exports_dir):
-                os.makedirs(qc_tool_exports_dir)
-            qc_max_file_path = "{}_QC.max".format(os.path.join(qc_tool_exports_dir, max_file_name))
-
-            mxs.saveMaxFile(qc_max_file_path, clearNeedSaveFlag=True, useNewFile=True, quiet=True)
-
-            # QC EXPORT
-            if QC_EXPORT:
-                pub_others = qc_vrscene_export(qc_max_file_path)
-
-            # QC RENDER
-            else:
-                qc_renders = qc_render([qc_max_file_path], "Lookdev", ".PNG", os.path.dirname(qc_max_file_path))
-
-        # CHECK-IN
-        if DEBUG_SKIP_ASSET_CHECKIN:
-            if DEBUG_PRINT:
-                print("\tSkipping Check-in for {}".format(asset_name))
-            continue
-
+    # CHECK-IN
+    if DEBUG_SKIP_ASSET_CHECKIN:
+        if DEBUG_PRINT:
+            print("\tSkipping Check-in for {}".format(asset_name))
+    else:
         description = (
             "Checked-in from 3DS MAX.\n"
             "\n"
@@ -740,7 +435,7 @@ def process_scene(scn_file_path, wrk_order):
             "{}\n"
             "\n"
             "Original Node:\n"
-            "{}".format(current_file_path, original_node_name))
+            "{}".format(original_max_path, original_node_name))
 
         ########################################################################
 
@@ -750,26 +445,21 @@ def process_scene(scn_file_path, wrk_order):
             wrk_order,
             asset_name,
             description,
-            matrix=original_t_matrix,
+            meta_data,
             qc_renders=qc_renders,
-            pub_others=pub_others)
+            pub_others=vr_scenes)
 
         ########################################################################
-
-        # Update asset File Collection with upstream File Collection of
-        # original scene.
-        if scene_file_collection and file_collection:
-            SG.update("CustomEntity16", file_collection.get("id"), {"sg_upstream": scene_file_collection})
 
         if file_collection:
             with open(MANIFEST_ASSETS_PATH, "a") as manifest_assets_file:
                 manifest_assets_file.write("\t{}\n".format(asset_name))
 
+            if not DEBUG_SKIP_QC and os.path.exists(qc_tool_exports_dir):
+                shutil.rmtree(qc_tool_exports_dir)
+
     # Reset scene
     mxs.resetMaxFile(mxs.Name("noPrompt"))
-
-    # Remove added paths.
-    remove_added_session_paths()
 
     return True
 
@@ -912,78 +602,36 @@ def qc_vrscene_farm_submit(task, file_collection):
     return jobs
 
 
-def replace_non_ascii_paths():
-    """Finds, copies, renames, and replaces non-ascii file paths."""
-
-    def get_non_ascii_nodes(fls_dict=None):
-        """Returns non-ascii file paths used in the scene.
-
-        Args:
-            fls_dict (dict|None): Path/Nodes dictionary.
-
-        Returns:
-            list: List of non-ascii paths.
-        """
-        if fls_dict is None:
-            fls_dict = collect_scene_files()
-        non_ascii = []
-        if fls_dict:
-            for f in fls_dict:
-                try:
-                    unicode(f).encode("ascii")
-                except UnicodeEncodeError:
-                    non_ascii.append(f)
-
-        return non_ascii
-
-    ##########
-
-    files_dict = collect_scene_files()
-    count = 0
-    scene_file_name = mxs.maxFileName.rsplit(".", 1)[0]
-
-    for p in get_non_ascii_nodes(files_dict):
-        extension = p.rsplit(".", 1)[1]
-        dirpath = mxs.maxFilePath
-        new_name = "{}_renamed_file_{}.{}".format(scene_file_name, count, extension)
-        new_dir = os.path.join(dirpath, "renamed_files")
-        new_path = os.path.join(new_dir, new_name)
-        if not os.path.exists(new_dir):
-            os.makedirs(new_dir)
-        shutil.copy(p, new_path)
-        count += 1
-
-        map_dict = files_dict.get(p)
-        for n in map_dict:
-            attrs_dict = map_dict.get(n)
-            for attr in attrs_dict.get("path_attrs"):
-                mxs.setProperty(n, attr, new_path)
-        print("Non-ascii image file replaced.  "
-              "New Path: {}".format(new_path))
-
-
-def search_and_process(search_path, wrk_order):
+def search_and_process(search_path, wrk_order, start_num=None):
     """Search given directory for MAX files then process them.
 
     Args:
         search_path (str): Directory to search.
         wrk_order (dict): Work order dictionary needed to check-in files.
+        start_num (int|None): Which number of paths on which to start.
     """
     # Manifest files.
     global MANIFEST_FILE_PATH
     global MANIFEST_MOST_RECENT
     global MANIFEST_FAILED_PATH
     MANIFEST_FILE_PATH = os.path.join(search_path, "__manifest__.txt")
-    MANIFEST_MOST_RECENT = os.path.join(search_path, "__current__.txt")
+    MANIFEST_MOST_RECENT = os.path.join(search_path, "__most_recent__.txt")
     MANIFEST_FAILED_PATH = os.path.join(search_path, "__failed__.txt")
+
+    json_manifest_path = os.path.join(search_path, "manifest.json")
+    with open(json_manifest_path) as json_file:
+        manifest_data = json.load(json_file)
 
     # If the process was interrupted, read the file path in current file and
     # restart processing AFTER that file.
-    most_recent_processed_file_path = None
+    most_recent_processed_num = None
     skip = False
     if os.path.exists(MANIFEST_MOST_RECENT):
         with open(MANIFEST_MOST_RECENT, "r") as most_recent_processed_file:
-            most_recent_processed_file_path = most_recent_processed_file.read()
+            most_recent_processed_num = most_recent_processed_file.read()
+        skip = True
+
+    if start_num is not None:
         skip = True
 
     count = 0  # Total count.
@@ -995,25 +643,20 @@ def search_and_process(search_path, wrk_order):
     print("Searching for scenes to process in {}...".format(search_path))
 
     # Walk through the search path, file MAX files, process them.
-    for files in max_walk(search_path):
+    for num in sorted(manifest_data, key=lambda x: int(x)):
+        max_file = manifest_data[num]
         if skip:
-            count += 1
-            if most_recent_processed_file_path in files:
-                skip = False
-            continue
+            if start_num is not None:
+                count += 1
+                if num == str(start_num - 1):
+                    skip = False
+                continue
+            else:
+                count += 1
+                if most_recent_processed_num == num:
+                    skip = False
+                continue
 
-        # Get MAX file.
-        if len(files) > 1:
-            files.sort(key=os.path.getmtime)
-            if not MAX_FILE_OLDEST:
-                files = reversed(files)
-
-            files = [f for f in files if is_max_file_path_clean(f)]
-
-        if not files:
-            continue
-
-        max_file = files[0]
         print("\n\nScene found: {}".format(max_file))
 
         ####################################################################
@@ -1021,14 +664,14 @@ def search_and_process(search_path, wrk_order):
         # Process the MAX file.
         process_success = process_scene(max_file, wrk_order)
 
-        ####################################################################
+        ###################################################################
 
         if process_success:
             # Write to manifest files.
             with open(MANIFEST_FILE_PATH, "a") as manifest_file:
                 manifest_file.write("{}\n".format(max_file))
             with open(MANIFEST_MOST_RECENT, "w") as most_recent_processed_file:
-                most_recent_processed_file.write(max_file)
+                most_recent_processed_file.write(num)
 
             cur_success_count += 1
         else:
@@ -1042,11 +685,13 @@ def search_and_process(search_path, wrk_order):
         if DEBUG_SCENE_COUNT_LIMIT and cur_count >= DEBUG_SCENE_COUNT_LIMIT:
             break
 
-    # os.remove(current_file_path)
     print("{} total MAX scenes.".format(count))
     print("{} current MAX scenes attempted.".format(cur_count))
     print("{} current MAX scenes succeeded.".format(cur_success_count))
     print("Manifest written: {}".format(MANIFEST_FILE_PATH))
+
+    if os.path.exists(MANIFEST_MOST_RECENT):
+        os.remove(MANIFEST_MOST_RECENT)
 
 
 def sort_key_alphanum(s, case_sensitive=False):
@@ -1106,7 +751,7 @@ if __name__ == "__main__":
     INGEST_COMPANY_ENTITY = SG.find_one("CustomNonProjectEntity02", [["code", "is", INGEST_COMPANY_NAME]])
 
     # Directory to search.
-    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion"
+    SEARCH_PATH = r"Q:\Shared drives\DVS_StockAssets\Evermotion\From_Adnet\__ingest_bulk__"
 
     # Specific scenes to process
     scene_file_paths = [
@@ -1130,7 +775,7 @@ if __name__ == "__main__":
             success = process_scene(scene_file_path, work_order)
     # Or search a directory and process
     else:
-        search_and_process(SEARCH_PATH, work_order)
+        search_and_process(SEARCH_PATH, work_order, DEBUG_START_NUM)
 
     # Reset scene.
     mxs.resetMaxFile(mxs.Name("noPrompt"))
